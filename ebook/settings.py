@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -38,11 +39,17 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    "corsheaders",
     'drf_spectacular',
-    'backend'
+    'material_mgt',
+    'user_mgt.apps.BackendConfig',
+    'payment',
+    'transactions',
 ]
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
+    "django.middleware.common.CommonMiddleware",
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -51,7 +58,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
-
+CORS_ORIGIN_ALLOW_ALL = True
 ROOT_URLCONF = 'ebook.urls'
 
 TEMPLATES = [
@@ -140,3 +147,24 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+ALLOWED_HOSTS = ['*']
+
+DEFAULT_FROM_EMAIL = "pretabesh@gmail.com"
+EMAIL_BACKEND ="django.core.mail.backends.console.EmailBackend"
+EMAIL_HOST = "smtp.gmail.com"
+EMAIL_PORT = 587
+EMAIL_HOST_USER = "pretabesh@gmail.com"
+EMAIL_HOST_PASSWORD = "aukabexdoaxcqnks"
+EMAIL_USE_TLS = True
+PASSWORD_RESET_FRONTEND_URL = os.getenv("PASSWORD_RESET_FRONTEND_URL", "http://localhost:3000/reset-password")
+
+from datetime import timedelta
+
+SIMPLE_JWT = {
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),   
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),      
+    # optional:
+    # "ROTATE_REFRESH_TOKENS": True,
+    # "BLACKLIST_AFTER_ROTATION": True,
+}
