@@ -75,7 +75,6 @@ class CanDeleteUsers(BasePermission):
             return False
         return True
 
-
 class IsTechnicalStaffForWrite(BasePermission):
     """
     Allow authenticated users to read.
@@ -88,4 +87,4 @@ class IsTechnicalStaffForWrite(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return True
-        return _norm_role(getattr(user, "role", None)) == "TECHNICAL STAFF"
+        return _norm_role(getattr(user, "role", None)) == "TECHNICALSTAFF"

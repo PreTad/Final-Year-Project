@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.routers import DefaultRouter
 from .views import (
+    AdminUsersListAPIView,
     ChangePasswordAPIView,
     CustomTokenObtainPairView,
     ForgotPasswordAPIView,
@@ -16,6 +17,7 @@ router = DefaultRouter()
 router.register("libraries", LibraryViewSet, basename="library")
 urlpatterns = [
     path("", include(router.urls)),
+    path("users/admins/", AdminUsersListAPIView.as_view(), name="users-admins"),
     path("users/create/", UserCreateAPIView.as_view(), name="user-create"),
     path("users/<uuid:pk>/delete/", UserDeleteAPIView.as_view(), name="user-delete"),
     path("auth/password/", ChangePasswordAPIView.as_view(), name="auth-change-password"),

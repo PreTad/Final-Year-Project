@@ -13,6 +13,7 @@ from drf_spectacular.utils import extend_schema
 from .models import Library, Staff, User
 from .permissions import CanCreateUsers, CanDeleteUsers, IsSuperAdminForWrite
 from .serializers import (
+    AdminUserListSerializer,
     ChangePasswordSerializer,
     ForgotPasswordSerializer,
     LibrarySerializer,
@@ -38,7 +39,7 @@ class LibraryViewSet(ModelViewSet):
 
         staffs = (
             Staff.objects.select_related("user_id")
-            .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"])
+            .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"], library__isnull=True)
             .order_by("user_id__first_name", "user_id__last_name")
         )
         admin_staffs = [
@@ -64,6 +65,18 @@ class UserCreateAPIView(CreateAPIView):
 class UserDeleteAPIView(DestroyAPIView):
     queryset = User.objects.all()
     permission_classes = [IsAuthenticated, CanDeleteUsers]
+
+
+class AdminUsersListAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        admins = User.objects.filter(
+            role="ADMIN",
+            staff__isnull=False,
+            staff__library__isnull=True,
+        ).order_by("first_name", "last_name")
+        return Response(AdminUserListSerializer(admins, many=True).data, status=status.HTTP_200_OK)
 
 
 def _norm_role(role):

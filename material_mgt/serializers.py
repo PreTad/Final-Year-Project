@@ -7,7 +7,7 @@ class PhysicalMaterialSerializer(serializers.ModelSerializer):
     class Meta:
         model = PhysicalMaterial
         fields = "__all__"
-        read_only_fields = ["created_by", "created_by_name"]
+        read_only_fields = ["created_by", "created_by_name", "copy_number"]
 
 
 class DigitalMaterialSerializer(serializers.ModelSerializer):
@@ -16,4 +16,4 @@ class DigitalMaterialSerializer(serializers.ModelSerializer):
     class Meta:
         model = DigitalMaterial
         fields = "__all__"
-        read_only_fields = ["created_by", "created_by_name"]
+        read_only_fields = ["created_by", "created_by_name", "format", "file_size"]

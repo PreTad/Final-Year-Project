@@ -239,8 +239,8 @@ class Library(models.Model):
         on_delete=models.SET_NULL,
         null=True,     
         blank=True ,
-        related_name='library'
-    ) 
+        related_name='library',
+        ) 
 
     @property
     def staff_name(self):

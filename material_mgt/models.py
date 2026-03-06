@@ -1,5 +1,6 @@
 from django.db import models
 import uuid
+import os
 # Create your models here.
 class DigitalMaterial (models.Model):
     id = models.UUIDField(primary_key=True, default= uuid.uuid4,editable=False)
@@ -20,6 +21,7 @@ class DigitalMaterial (models.Model):
     isbn = models.CharField(max_length=70,unique=True,null=True,blank=True)
     format = models.CharField(max_length=20)
     file_size = models.CharField(max_length=10)
+    file = models.FileField(upload_to="digital_materials/")
     created_by = models.ForeignKey(
         "backend.Staff",
         on_delete=models.SET_NULL,
@@ -27,6 +29,24 @@ class DigitalMaterial (models.Model):
         null=True,         
         blank=True 
     )
+
+    @staticmethod
+    def _human_readable_size(size_in_bytes):
+        if size_in_bytes < 1024:
+            return f"{size_in_bytes} B"
+        if size_in_bytes < 1024 * 1024:
+            return f"{size_in_bytes / 1024:.1f} KB"
+        if size_in_bytes < 1024 * 1024 * 1024:
+            return f"{size_in_bytes / (1024 * 1024):.1f} MB"
+        return f"{size_in_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+    def save(self, *args, **kwargs):
+        if self.file:
+            _, extension = os.path.splitext(self.file.name)
+            self.format = extension.lstrip(".").upper() or "UNKNOWN"
+            self.file_size = self._human_readable_size(self.file.size)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.title
     
@@ -48,8 +68,8 @@ class PhysicalMaterial (models.Model):
     department = models.CharField(max_length=70)
     language = models.CharField(max_length=70)
     isbn = models.CharField(max_length=70,null=True,blank=True)
-    copy_number = models.CharField(max_length=100)
-    available_copies = models.IntegerField()
+    copy_number = models.CharField(max_length=100, unique=True)
+    total_copies = models.IntegerField()
     price = models.DecimalField(max_digits=10,decimal_places=2)
     CONDITION = [
         ('NEW','NEW'),
@@ -73,5 +93,5 @@ class PhysicalMaterial (models.Model):
     )
     
     def __str__(self):
-        return self.title
+        return self.copy_number
     
