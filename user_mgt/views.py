@@ -85,7 +85,7 @@ class AdminUsersAPIView(APIView):
     def get(self, request):
         staffs = (
             Staff.objects.select_related("user_id")
-            .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"])
+            .filter(user_id__role__in=["ADMIN"])
             .order_by("user_id__first_name", "user_id__last_name")
         )
         data = [
@@ -98,6 +98,19 @@ class AdminUsersAPIView(APIView):
             for staff in staffs
         ]
         return Response(data, status=status.HTTP_200_OK)
+
+# class AdminUsersListAPIView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request):
+#         admins = User.objects.filter(
+#             role="ADMIN",
+#             staff__isnull=False,
+#             staff__library__isnull=True,
+#         ).order_by("first_name", "last_name")
+#         return Response(AdminUserListSerializer(admins, many=True).data, status=status.HTTP_200_OK)
+
+
 
 
 def _norm_role(role):
