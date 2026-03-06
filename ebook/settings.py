@@ -126,6 +126,7 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "Digital Library Reservation and Book Borrowing System API",
     "DESCRIPTION": "API documentation for the HU-DLRBS backend.",
     "VERSION": "1.0.0",
+    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 # Internationalization
@@ -164,9 +165,11 @@ from datetime import timedelta
 
 SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),   
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=2),   
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),      
     # optional:
     # "ROTATE_REFRESH_TOKENS": True,
     # "BLACKLIST_AFTER_ROTATION": True,
 }
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 attrs==23.2.0
 Babel==2.10.3
 bcc==0.29.1
@@ -82,3 +83,21 @@ websocket-client==1.7.0
 wheel==0.42.0
 xdg==5
 xkit==0.0.0
+=======
+asgiref==3.11.1
+attrs==25.4.0
+Django==6.0.2
+django-cors-headers==4.9.0
+djangorestframework==3.16.1
+djangorestframework_simplejwt==5.5.1
+drf-spectacular==0.29.0
+inflection==0.5.1
+jsonschema==4.17.3
+pillow==12.1.0
+PyJWT==2.11.0
+pyrsistent==0.20.0
+PyYAML==6.0.3
+sqlparse==0.5.5
+tzdata==2025.3
+uritemplate==4.2.0
+>>>>>>> 6cda79f11c21aad48fbb99f57000b21628f4dcd2

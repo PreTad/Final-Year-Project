@@ -46,6 +46,18 @@ class LibrarySerializer(serializers.ModelSerializer):
         model = Library
         fields = ["id", "name", "campus", "staff_id", "staff_name", "location", "phone"]
 
+    def validate_staff_id(self, value):
+        if value is None:
+            return value
+
+        existing = Library.objects.filter(staff_id=value)
+        if self.instance:
+            existing = existing.exclude(pk=self.instance.pk)
+
+        if existing.exists():
+            raise serializers.ValidationError("This admin is already assigned to another library.")
+        return value
+
 
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
@@ -243,3 +255,19 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             "photo": _build_media_url(request, getattr(profile, "photo", None)),
         }
         return data
+
+
+class AdminUserListSerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
+    staff_id = serializers.SerializerMethodField()
+
+    def get_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip() or obj.id_number
+
+    def get_staff_id(self, obj):
+        staff = getattr(obj, "staff", None)
+        return str(staff.id) if staff else None
+
+    class Meta:
+        model = User
+        fields = ["id", "staff_id", "id_number", "name", "first_name", "last_name", "email", "role", "status"]

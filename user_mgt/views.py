@@ -14,6 +14,7 @@ from drf_spectacular.utils import extend_schema
 from .models import Library, Staff, User
 from .permissions import CanCreateUsers, CanDeleteUsers, IsSuperAdminForWrite
 from .serializers import (
+    AdminUserListSerializer,
     ChangePasswordSerializer,
     ForgotPasswordSerializer,
     LibrarySerializer,
@@ -38,7 +39,7 @@ class LibraryViewSet(ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
         staffs = (
             Staff.objects.select_related("user_id")
-            .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"])
+            .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"], library__isnull=True)
             .order_by("user_id__first_name", "user_id__last_name")
         )
         admin_staffs = [
