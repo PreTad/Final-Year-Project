@@ -205,6 +205,25 @@ class UserMeSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         return _build_media_url(request, getattr(profile, "photo", None))
 
+
+class UserListSerializer(serializers.ModelSerializer):
+    phone = serializers.SerializerMethodField()
+    photo = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ["id", "id_number", "first_name", "last_name", "email", "role", "status", "phone", "photo"]
+
+    def get_phone(self, obj):
+        profile = _get_user_profile(obj)
+        return getattr(profile, "phone", None)
+
+    def get_photo(self, obj):
+        profile = _get_user_profile(obj)
+        request = self.context.get("request")
+        return _build_media_url(request, getattr(profile, "photo", None))
+
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)

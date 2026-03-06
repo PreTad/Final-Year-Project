@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from material_mgt.models import *
 from material_mgt.serializers import *
 from user_mgt.permissions import *
@@ -34,6 +35,7 @@ class DigitalMaterialViewSet(ModelViewSet):
     queryset = DigitalMaterial.objects.all()
     serializer_class = DigitalMaterialSerializer
     permission_classes = [IsAuthenticated, IsTechnicalStaffForWrite]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def perform_create(self, serializer):
         serializer.save(created_by=_get_staff_profile_or_error(self.request.user))

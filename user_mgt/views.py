@@ -1,5 +1,6 @@
 from rest_framework.generics import CreateAPIView
 from rest_framework.generics import DestroyAPIView
+from rest_framework.generics import ListAPIView
 from django.contrib.auth import update_session_auth_hash
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -17,6 +18,7 @@ from .serializers import (
     ForgotPasswordSerializer,
     LibrarySerializer,
     ResetPasswordSerializer,
+    UserListSerializer,
     UserMeSerializer,
     UserCreateSerializer,
 )
@@ -34,8 +36,6 @@ class LibraryViewSet(ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        serializer = self.get_serializer(queryset, many=True)
-
         staffs = (
             Staff.objects.select_related("user_id")
             .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"])
@@ -50,10 +50,16 @@ class LibraryViewSet(ModelViewSet):
             for staff in staffs
         ]
 
-        return Response(
-            {"libraries": serializer.data, "admin_staffs": admin_staffs},
-            status=status.HTTP_200_OK,
-        )
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+            response.data["libraries"] = serializer.data
+            response.data["admin_staffs"] = admin_staffs
+            return response
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response({"libraries": serializer.data, "admin_staffs": admin_staffs}, status=status.HTTP_200_OK)
 
 
 class UserCreateAPIView(CreateAPIView):
@@ -64,6 +70,33 @@ class UserCreateAPIView(CreateAPIView):
 class UserDeleteAPIView(DestroyAPIView):
     queryset = User.objects.all()
     permission_classes = [IsAuthenticated, CanDeleteUsers]
+
+
+class UserListAPIView(ListAPIView):
+    queryset = User.objects.all().order_by("first_name", "last_name", "id_number")
+    serializer_class = UserListSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class AdminUsersAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        staffs = (
+            Staff.objects.select_related("user_id")
+            .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"])
+            .order_by("user_id__first_name", "user_id__last_name")
+        )
+        data = [
+            {
+                "staff_id": str(staff.id),
+                "name": staff.full_name or staff.user_id.id_number,
+                "role": staff.user_id.role,
+                "user_id": str(staff.user_id.id),
+            }
+            for staff in staffs
+        ]
+        return Response(data, status=status.HTTP_200_OK)
 
 
 def _norm_role(role):

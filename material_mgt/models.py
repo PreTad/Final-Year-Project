@@ -18,8 +18,9 @@ class DigitalMaterial (models.Model):
     department = models.CharField(max_length=70)
     language = models.CharField(max_length=70)
     isbn = models.CharField(max_length=70,unique=True,null=True,blank=True)
-    format = models.CharField(max_length=20)
-    file_size = models.CharField(max_length=10)
+    file = models.FileField(upload_to="digital_materials/", null=True, blank=True)
+    format = models.CharField(max_length=20, blank=True, default="")
+    file_size = models.CharField(max_length=20, blank=True, default="")
     created_by = models.ForeignKey(
         "backend.Staff",
         on_delete=models.SET_NULL,
