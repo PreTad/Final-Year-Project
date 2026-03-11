@@ -1,4 +1,4 @@
-from datetime import timezone
+from django.utils import timezone
 
 from .models import *
 from rest_framework import serializers
@@ -25,6 +25,7 @@ class ReservationSerializer(serializers.ModelSerializer):
             "member_id",
             "reserve_date",
             "expiry_date",
+            "status",
             "material_title",
             "material_author",
         ]
@@ -40,7 +41,8 @@ class ReservationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"material_id": "Material is required."})
             if not material.can_borrow:
                 raise serializers.ValidationError({"material_id": "This material cannot be reserved."})
-            if material.available_copies <= 0:
+            # PhysicalMaterial does not have available_copies; use total_copies for availability checks.
+            if material.total_copies <= 0:
                 raise serializers.ValidationError({"material_id": "No available copies for reservation."})
 
             member = getattr(user, "member", None)
@@ -71,6 +73,6 @@ class ReservationSerializer(serializers.ModelSerializer):
         if not member:
             raise serializers.ValidationError("Only members can create reservations.")
         validated_data["member_id"] = member
-        validated_data["expiry_date"] = timezone.now() + timezone.timedelta(hours=24)
+        validated_data["expiry_date"] = timezone.now() + timezone.timedelta(hours=3)
         validated_data.setdefault("status", "RESERVED")
         return super().create(validated_data)

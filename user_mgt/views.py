@@ -6,10 +6,10 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import filters, status
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 
 from .models import Library, Staff, User
 from .permissions import CanCreateUsers, CanDeleteUsers, IsSuperAdminForWrite
@@ -73,12 +73,52 @@ class UserDeleteAPIView(DestroyAPIView):
     permission_classes = [IsAuthenticated, CanDeleteUsers]
 
 
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            name="role",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Filter users by role. Example values: ADMIN, MEMBER, SUPER ADMIN",
+        ),
+        OpenApiParameter(
+            name="first_name",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Search by first name (case-insensitive, partial match).",
+        ),
+        OpenApiParameter(
+            name="id_number",
+            type=OpenApiTypes.STR,
+            location=OpenApiParameter.QUERY,
+            required=False,
+            description="Search by id",
+        ),
+        
+    ]
+)
 class UserListAPIView(ListAPIView):
-    queryset = User.objects.all().order_by("first_name", "last_name", "id_number")
     serializer_class = UserListSerializer
     permission_classes = [IsAuthenticated]
-
-
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['^first_name','=id_number']
+    def get_queryset(self):
+        queryset = User.objects.all().order_by("first_name", "last_name", "id_number")
+        role = self.request.query_params.get("role")
+        first_name = self.request.query_params.get("first_name")
+        id_number = self.request.query_params.get("id_number")
+        
+        if role:
+            queryset = User.objects.filter(role__istartswith = role).order_by("first_name", "last_name", "id_number")
+        if first_name:
+            queryset = queryset.filter(first_name__istartswith=first_name)
+        if id_number:
+            queryset = queryset.filter(id_number__exact=id_number)
+        
+        return queryset
+    
 class AdminUsersAPIView(APIView):
     permission_classes = [IsAuthenticated]
 

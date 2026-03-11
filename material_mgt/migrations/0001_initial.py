@@ -44,7 +44,6 @@ class Migration(migrations.Migration):
                 ('language', models.CharField(max_length=70)),
                 ('isbn', models.CharField(blank=True, max_length=70, null=True)),
                 ('copy_number', models.CharField(max_length=100)),
-                ('available_copies', models.IntegerField()),
                 ('price', models.DecimalField(decimal_places=2, max_digits=10)),
                 ('condition', models.CharField(choices=[('NEW', 'NEW'), ('GOOD', 'GOOD'), ('FAIR', 'FAIR'), ('DAMAGED', 'DAMAGED')], default='GOOD', max_length=20)),
                 ('location', models.CharField(choices=[('STACK', 'STACK'), ('SHELF', 'SHELF')], default='STACK', max_length=20)),

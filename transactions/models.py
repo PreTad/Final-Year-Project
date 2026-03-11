@@ -6,12 +6,12 @@ class Reservation(models.Model):
     id = models.UUIDField(primary_key=True, default= uuid.uuid4,editable=False)
     member_id = models.ForeignKey(
         "backend.Member",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name='reservation'
     ) 
     material_id = models.ForeignKey(
         "material_mgt.PhysicalMaterial",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name='reservation'
     ) 
     reserve_date = models.DateTimeField(auto_now_add=True)

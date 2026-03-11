@@ -64,7 +64,7 @@ def _next_copy_sequence(prefix):
 class PhysicalMaterialViewSet(ModelViewSet):
     queryset = PhysicalMaterial.objects.all()
     serializer_class = PhysicalMaterialSerializer
-    permission_classes = [IsAuthenticated, IsTechnicalStaffForWrite]
+    # permission_classes = [IsAuthenticated, IsTechnicalStaffForWrite]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -106,7 +106,7 @@ class PhysicalMaterialViewSet(ModelViewSet):
 class DigitalMaterialViewSet(ModelViewSet):
     queryset = DigitalMaterial.objects.all()
     serializer_class = DigitalMaterialSerializer
-    permission_classes = [IsAuthenticated, IsTechnicalStaffForWrite]
+    # permission_classes = [IsAuthenticated, IsTechnicalStaffForWrite]
 
     def perform_create(self, serializer):
         serializer.save(created_by=_get_staff_profile_or_error(self.request.user))

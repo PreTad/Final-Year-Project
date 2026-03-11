@@ -6,15 +6,10 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('material_mgt', '0001_initial'),
+        ('material_mgt', '0002_digitalmaterial_file'),
     ]
 
     operations = [
-        migrations.AddField(
-            model_name='digitalmaterial',
-            name='file',
-            field=models.FileField(blank=True, null=True, upload_to='digital_materials/'),
-        ),
         migrations.AlterField(
             model_name='digitalmaterial',
             name='file_size',

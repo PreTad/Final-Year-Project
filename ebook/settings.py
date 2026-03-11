@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'user_mgt.apps.BackendConfig',
     'payment',
     'transactions',
+    'django_filters'
 ]
 
 MIDDLEWARE = [
@@ -116,6 +117,7 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "ebook.pagination.PageNumberSizePagination",
     "PAGE_SIZE": 25,
+    'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend']
 }
 
 SIMPLE_JWT = {
