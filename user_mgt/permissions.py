@@ -88,3 +88,20 @@ class IsTechnicalStaffForWrite(BasePermission):
         if request.method in SAFE_METHODS:
             return True
         return _norm_role(getattr(user, "role", None)) == "TECHNICALSTAFF"
+
+
+class IsStackStaffForWrite(BasePermission):
+    """
+    Allow authenticated users to read.
+    Restrict create/update/delete to STACK STAFF role.
+    """
+
+    message = "Only STACK STAFF can perform write operations."
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        return _norm_role(getattr(user, "role", None)) == "STACKSTAFF"

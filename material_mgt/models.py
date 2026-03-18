@@ -68,8 +68,8 @@ class PhysicalMaterial (models.Model):
     department = models.CharField(max_length=70)
     language = models.CharField(max_length=70)
     isbn = models.CharField(max_length=70,null=True,blank=True)
-    copy_number = models.CharField(max_length=100, unique=True)
     total_copies = models.IntegerField()
+    available_copies = models.IntegerField(null=True, blank=True)
     price = models.DecimalField(max_digits=10,decimal_places=2)
     CONDITION = [
         ('NEW','NEW'),
@@ -91,7 +91,12 @@ class PhysicalMaterial (models.Model):
         null=True, 
         blank=True 
     )
+
+    def save(self, *args, **kwargs):
+        if self.available_copies is None:
+            self.available_copies = self.total_copies
+        super().save(*args, **kwargs)
     
     def __str__(self):
-        return self.copy_number
+        return self.title
     

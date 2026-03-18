@@ -50,3 +50,11 @@ class ReservationViewSet(ModelViewSet):
             reservation.status = "CANCELLED"
             reservation.save(update_fields=["status"])
         return Response(status=204)
+class BorrowViewSet(ModelViewSet):
+    
+    queryset = Borrow.objects.all().order_by("-borrow_date")
+    serializer_class = BorrowSerializer
+    # permission_classes = [IsStackStaffForWrite]
+
+    def perform_create(self, serializer):
+        serializer.save()

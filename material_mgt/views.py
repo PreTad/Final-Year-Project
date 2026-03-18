@@ -1,7 +1,5 @@
 from rest_framework.generics import CreateAPIView
 from rest_framework.generics import DestroyAPIView
-import re
-from django.db import transaction
 from django.contrib.auth import update_session_auth_hash
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -41,26 +39,6 @@ def _get_staff_profile_or_error(user):
 
     return Staff.objects.create(user_id=user)
 
-
-def _copy_prefix_from_title(title):
-    letters_only = "".join(ch for ch in (title or "").upper() if ch.isalpha())
-    if not letters_only:
-        return "MAT"
-    return letters_only[:3].ljust(3, "X")
-
-
-def _next_copy_sequence(prefix):
-    existing_copy_numbers = PhysicalMaterial.objects.filter(copy_number__startswith=prefix).values_list(
-        "copy_number", flat=True
-    )
-    max_suffix = 0
-    pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$")
-    for copy_number in existing_copy_numbers:
-        match = pattern.match(copy_number or "")
-        if match:
-            max_suffix = max(max_suffix, int(match.group(1)))
-    return max_suffix + 1
-
 class PhysicalMaterialViewSet(ModelViewSet):
     queryset = PhysicalMaterial.objects.all()
     serializer_class = PhysicalMaterialSerializer
@@ -71,33 +49,25 @@ class PhysicalMaterialViewSet(ModelViewSet):
         serializer.is_valid(raise_exception=True)
         staff_profile = _get_staff_profile_or_error(request.user)
 
-        data = serializer.validated_data.copy()
-        total_copies = int(data.pop("total_copies"))
+        data = serializer.validated_data
+        total_copies = int(data.get("total_copies") or 0)
         if total_copies < 1:
             raise ValidationError({"total_copies": "total_copies must be at least 1."})
 
-        title = data.get("title")
-        prefix = _copy_prefix_from_title(title)
+        available_copies = data.get("available_copies")
+        if available_copies is None:
+            available_copies = total_copies
+        elif int(available_copies) > total_copies:
+            raise ValidationError(
+                {"available_copies": "available_copies cannot exceed total_copies."}
+            )
 
-        created_items = []
-        with transaction.atomic():
-            next_seq = _next_copy_sequence(prefix)
-            for offset in range(total_copies):
-                copy_number = f"{prefix}{next_seq + offset:03d}"
-                created_items.append(
-                    PhysicalMaterial.objects.create(
-                        **data,
-                        total_copies=1,
-                        copy_number=copy_number,
-                        created_by=staff_profile,
-                    )
-                )
-
-        output = self.get_serializer(created_items, many=True)
-        return Response(
-            {"created_count": len(created_items), "items": output.data},
-            status=status.HTTP_201_CREATED,
+        material = serializer.save(
+            created_by=staff_profile,
+            available_copies=available_copies,
         )
+        output = self.get_serializer(material)
+        return Response(output.data, status=status.HTTP_201_CREATED)
 
     def perform_update(self, serializer):
         serializer.save()

@@ -219,12 +219,13 @@ class UserMeSerializer(serializers.ModelSerializer):
 
 
 class UserListSerializer(serializers.ModelSerializer):
+    user_id = serializers.UUIDField(source="id", read_only=True)
     phone = serializers.SerializerMethodField()
     photo = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "id_number", "first_name", "last_name", "email", "role", "status", "phone", "photo"]
+        fields = ["id", "user_id","id_number", "first_name", "last_name", "email", "role", "status", "phone", "photo"]
 
     def get_phone(self, obj):
         profile = _get_user_profile(obj)
