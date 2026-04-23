@@ -1,14 +1,15 @@
+import secrets
+import time
 from django.conf import settings
-from django.contrib.auth.tokens import default_token_generator
+from django.core.cache import cache
 from django.core.mail import send_mail
-from django.utils.encoding import force_bytes, force_str
-from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import DepartmentHead, Library, Member, Staff, User
 
+# --- Helper Functions ---
 
 def _norm_role(role):
     return "".join(str(role or "").upper().split())
@@ -28,6 +29,47 @@ def _build_media_url(request, file_field):
     url = file_field.url
     return request.build_absolute_uri(url) if request else url
 
+
+def _password_reset_otp_cache_key(email):
+    return f"password_reset_otp:{email.lower()}"
+
+
+def _password_reset_confirm_cache_key(email, confirm_token):
+    return f"password_reset_confirm:{email.lower()}:{confirm_token}"
+
+
+def _validate_password_reset_otp(email, otp):
+    now_ts = int(time.time())
+    cache_key = _password_reset_otp_cache_key(email)
+    otp_data = cache.get(cache_key)
+    
+    if not otp_data:
+        raise serializers.ValidationError({"otp": "Invalid or expired OTP."})
+
+    expires_at = int(otp_data.get("expires_at", 0))
+    if now_ts > expires_at:
+        cache.delete(cache_key)
+        raise serializers.ValidationError({"otp": "Invalid or expired OTP."})
+
+    expected_otp = str(otp_data.get("otp", ""))
+    attempts = int(otp_data.get("attempts", 0))
+    max_attempts = int(getattr(settings, "PASSWORD_RESET_OTP_MAX_ATTEMPTS", 5))
+
+    if otp != expected_otp:
+        attempts += 1
+        if attempts >= max_attempts:
+            cache.delete(cache_key)
+            raise serializers.ValidationError({"otp": "Too many failed attempts. Request a new OTP."})
+        else:
+            otp_data["attempts"] = attempts
+            remaining = max(1, expires_at - now_ts)
+            cache.set(cache_key, otp_data, timeout=remaining)
+        raise serializers.ValidationError({"otp": "Invalid OTP code."})
+
+    return cache_key, otp_data
+
+
+# --- Model Serializers ---
 
 class LibrarySerializer(serializers.ModelSerializer):
     staff_id = serializers.PrimaryKeyRelatedField(
@@ -49,11 +91,9 @@ class LibrarySerializer(serializers.ModelSerializer):
     def validate_staff_id(self, value):
         if value is None:
             return value
-
         existing = Library.objects.filter(staff_id=value)
         if self.instance:
             existing = existing.exclude(pk=self.instance.pk)
-
         if existing.exists():
             raise serializers.ValidationError("This admin is already assigned to another library.")
         return value
@@ -67,19 +107,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = [
-            "id",
-            "id_number",
-            "first_name",
-            "last_name",
-            "email",
-            "role",
-            "status",
-            "password",
-            "phone",
-            "department",
-            "user_type",
-        ]
+        fields = ["id", "id_number", "first_name", "last_name", "email", "role", "status", "password", "phone", "department", "user_type"]
         read_only_fields = ["id"]
 
     def validate(self, attrs):
@@ -91,15 +119,13 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
         if creator_role == "ADMIN" and target_role_norm in {"ADMIN", "SUPERADMIN"}:
             raise serializers.ValidationError("ADMIN users cannot create ADMIN or SUPER ADMIN accounts.")
-
         if creator_role not in {"ADMIN", "SUPERADMIN"}:
             raise serializers.ValidationError("Only ADMIN or SUPER ADMIN can create users.")
-
-        if target_role_norm == "MEMBER" and not attrs.get("department"):
-            raise serializers.ValidationError({"department": "Department is required when creating a MEMBER."})
-        if target_role_norm == "MEMBER" and not attrs.get("user_type"):
-            raise serializers.ValidationError({"user_type": "User type is required when creating a MEMBER."})
-
+        if target_role_norm == "MEMBER":
+            if not attrs.get("department"):
+                raise serializers.ValidationError({"department": "Department is required for MEMBER."})
+            if not attrs.get("user_type"):
+                raise serializers.ValidationError({"user_type": "User type is required for MEMBER."})
         return attrs
 
     def create(self, validated_data):
@@ -107,36 +133,25 @@ class UserCreateSerializer(serializers.ModelSerializer):
         phone = validated_data.pop("phone")
         department = validated_data.pop("department", "UNASSIGNED")
         user_type = validated_data.pop("user_type", None)
-        role = validated_data.get("role")
-        role_norm = _norm_role(role)
+        role_norm = _norm_role(validated_data.get("role"))
         
         with transaction.atomic():
             if role_norm == "SUPERADMIN":
                 user = User.objects.create_superuser(password=password, **validated_data)
-            elif role_norm == "ADMIN":
-                validated_data.setdefault("is_staff", True)
-                validated_data.setdefault("is_superuser", False)
-                user = User.objects.create_user(password=password, **validated_data)
             else:
-                validated_data.setdefault("is_staff", False)
-                validated_data.setdefault("is_superuser", False)
+                validated_data.setdefault("is_staff", role_norm == "ADMIN")
                 user = User.objects.create_user(password=password, **validated_data)
 
             if role_norm == "MEMBER":
-                Member.objects.get_or_create(
-                    user_id=user,
-                    defaults={"department": department, "user_type": user_type, "phone": phone},
-                )
+                Member.objects.get_or_create(user_id=user, defaults={"department": department, "user_type": user_type, "phone": phone})
             elif role_norm == "DEPARTMENTHEAD":
-                DepartmentHead.objects.get_or_create(
-                    user_id=user,
-                    defaults={"department": department, "phone": phone},
-                )
-            elif role_norm in {"STACKSTAFF", "TECHNICALSTAFF", "FRONTDESKSTAFF", "ADMIN", "SUPERADMIN"}:
+                DepartmentHead.objects.get_or_create(user_id=user, defaults={"department": department, "phone": phone})
+            else:
                 Staff.objects.get_or_create(user_id=user, defaults={"phone": phone})
-
             return user
 
+
+# --- Authentication & Password Reset Serializers ---
 
 class ChangePasswordSerializer(serializers.Serializer):
     old_password = serializers.CharField(write_only=True)
@@ -152,52 +167,86 @@ class ForgotPasswordSerializer(serializers.Serializer):
         if not user:
             return
 
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
-        frontend_base_url = getattr(settings, "PASSWORD_RESET_FRONTEND_URL", "").rstrip("/")
+        ttl_seconds = int(getattr(settings, "PASSWORD_RESET_OTP_TTL_SECONDS", 600))
+        resend_limit = int(getattr(settings, "PASSWORD_RESET_OTP_RESEND_SECONDS", 60))
+        now_ts = int(time.time())
+        cache_key = _password_reset_otp_cache_key(email)
+        cached_data = cache.get(cache_key) or {}
 
-        if frontend_base_url:
-            reset_link = f"{frontend_base_url}?uid={uid}&token={token}"
-        else:
-            reset_link = f"/reset-password?uid={uid}&token={token}"
+        if cached_data.get("last_sent") and (now_ts - cached_data["last_sent"]) < resend_limit:
+            wait = resend_limit - (now_ts - cached_data["last_sent"])
+            raise serializers.ValidationError({"detail": f"Please wait {wait}s before requesting another OTP."})
+
+        otp = f"{secrets.randbelow(1_000_000):06d}"
+        cache.set(cache_key, {"otp": otp, "attempts": 0, "expires_at": now_ts + ttl_seconds, "last_sent": now_ts}, timeout=ttl_seconds + 60)
 
         send_mail(
-            subject="Password Reset Request",
-            message=(
-                "You requested a password reset for your account.\n\n"
-                f"Use this link to reset your password:\n{reset_link}\n\n"
-                "If you did not request this, please ignore this email."
-            ),
+            subject="Password Reset OTP",
+            message=f"Your password reset code is: {otp}\nExpires in {ttl_seconds // 60} minutes.",
             from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
             recipient_list=[user.email],
             fail_silently=False,
         )
 
 
-class ResetPasswordSerializer(serializers.Serializer):
-    uid = serializers.CharField()
-    token = serializers.CharField()
-    new_password = serializers.CharField(write_only=True, min_length=8)
+class ConfirmResetOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField(max_length=6)
 
     def validate(self, attrs):
+        email = attrs["email"].strip().lower()
+        _validate_password_reset_otp(email, attrs["otp"].strip())
+        attrs["email"] = email
+        return attrs
+
+    def save(self):
+        email = self.validated_data["email"]
+        ttl = int(getattr(settings, "PASSWORD_RESET_CONFIRM_TTL_SECONDS", 600))
+        confirm_token = secrets.token_urlsafe(24)
+        cache.set(_password_reset_confirm_cache_key(email, confirm_token), True, timeout=ttl)
+        return {"confirm_token": confirm_token, "expires_in": ttl}
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    confirm_token = serializers.CharField(write_only=True, required=False, allow_blank=False)
+    password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+
+        email = attrs["email"].strip().lower()
+        request = self.context.get("request")
+        confirm_token = attrs.get("confirm_token")
+        if confirm_token:
+            confirm_token = confirm_token.strip()
+        if not confirm_token and request:
+            confirm_token = request.COOKIES.get("password_reset_confirm_token")
+
+        if not confirm_token or not cache.get(_password_reset_confirm_cache_key(email, confirm_token)):
+            raise serializers.ValidationError({"detail": "Confirmation session expired. Please verify OTP again."})
+
         try:
-            user_id = force_str(urlsafe_base64_decode(attrs["uid"]))
-            user = User.objects.get(pk=user_id)
-        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
-            raise serializers.ValidationError({"uid": "Invalid reset link."})
+            attrs["user"] = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            raise serializers.ValidationError({"detail": "Invalid request."})
 
-        if not default_token_generator.check_token(user, attrs["token"]):
-            raise serializers.ValidationError({"token": "Invalid or expired reset token."})
-
-        attrs["user"] = user
+        attrs["_confirm_cache_key"] = _password_reset_confirm_cache_key(email, confirm_token)
+        attrs["_otp_cache_key"] = _password_reset_otp_cache_key(email)
         return attrs
 
     def save(self):
         user = self.validated_data["user"]
-        user.set_password(self.validated_data["new_password"])
+        user.set_password(self.validated_data["password"])
         user.save(update_fields=["password"])
+        cache.delete(self.validated_data["_confirm_cache_key"])
+        cache.delete(self.validated_data["_otp_cache_key"])
         return user
 
+
+# --- User & Profile Serializers ---
 
 class UserMeSerializer(serializers.ModelSerializer):
     phone = serializers.SerializerMethodField()
@@ -214,8 +263,7 @@ class UserMeSerializer(serializers.ModelSerializer):
 
     def get_photo(self, obj):
         profile = _get_user_profile(obj)
-        request = self.context.get("request")
-        return _build_media_url(request, getattr(profile, "photo", None))
+        return _build_media_url(self.context.get("request"), getattr(profile, "photo", None))
 
 
 class UserListSerializer(serializers.ModelSerializer):
@@ -225,7 +273,7 @@ class UserListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "user_id","id_number", "first_name", "last_name", "email", "role", "status", "phone", "photo"]
+        fields = ["id", "user_id", "id_number", "first_name", "last_name", "email", "role", "status", "phone", "photo"]
 
     def get_phone(self, obj):
         profile = _get_user_profile(obj)
@@ -233,17 +281,13 @@ class UserListSerializer(serializers.ModelSerializer):
 
     def get_photo(self, obj):
         profile = _get_user_profile(obj)
-        request = self.context.get("request")
-        return _build_media_url(request, getattr(profile, "photo", None))
+        return _build_media_url(self.context.get("request"), getattr(profile, "photo", None))
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         profile = _get_user_profile(self.user)
-        request = self.context.get("request")
-
-        # Extra response fields (alongside refresh/access)
         data["user"] = {
             "id": str(self.user.id),
             "id_number": self.user.id_number,
@@ -253,7 +297,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             "role": self.user.role,
             "status": self.user.status,
             "phone": getattr(profile, "phone", None),
-            "photo": _build_media_url(request, getattr(profile, "photo", None)),
+            "photo": _build_media_url(self.context.get("request"), getattr(profile, "photo", None)),
         }
         return data
 

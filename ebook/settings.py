@@ -12,9 +12,26 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+import socket
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_env_file(env_path):
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+_load_env_file(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -154,14 +171,37 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 ALLOWED_HOSTS = ['*']
 
-DEFAULT_FROM_EMAIL = "pretabesh@gmail.com"
-EMAIL_BACKEND ="django.core.mail.backends.console.EmailBackend"
-EMAIL_HOST = "smtp.gmail.com"
-EMAIL_PORT = 587
-EMAIL_HOST_USER = "pretabesh@gmail.com"
-EMAIL_HOST_PASSWORD = "aukabexdoaxcqnks"
-EMAIL_USE_TLS = True
-PASSWORD_RESET_FRONTEND_URL = os.getenv("PASSWORD_RESET_FRONTEND_URL", "http://localhost:3000/reset-password")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "pretabesh@gmail.com")
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() == "true"
+EMAIL_DEV_FALLBACK_TO_CONSOLE = os.getenv("EMAIL_DEV_FALLBACK_TO_CONSOLE", "True").lower() == "true"
+
+
+def _smtp_server_reachable(host, port, timeout=3):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+if DEBUG and EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend" and EMAIL_DEV_FALLBACK_TO_CONSOLE:
+    smtp_reachable = _smtp_server_reachable(EMAIL_HOST, EMAIL_PORT)
+    if not smtp_reachable:
+        EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+        print(
+            f"[email fallback] SMTP {EMAIL_HOST}:{EMAIL_PORT} unreachable. "
+            "Using console email backend for development."
+        )
+
+PASSWORD_RESET_FRONTEND_URL = os.getenv(
+    "PASSWORD_RESET_FRONTEND_URL",
+    "http://localhost:5173/reset-password",
+)
 
 from datetime import timedelta
 
@@ -175,3 +215,11 @@ SIMPLE_JWT = {
 }
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Chapa payment settings
+CHAPA_BASE_URL = os.getenv("CHAPA_BASE_URL", "https://api.chapa.co")
+CHAPA_SECRET_KEY = os.getenv("CHAPA_SECRET_KEY", "")
+CHAPA_PUBLIC_KEY = os.getenv("CHAPA_PUBLIC_KEY", "")
+CHAPA_CURRENCY = os.getenv("CHAPA_CURRENCY", "ETB")
+CHAPA_CALLBACK_URL = os.getenv("CHAPA_CALLBACK_URL", "")
+CHAPA_RETURN_URL = os.getenv("CHAPA_RETURN_URL", "")

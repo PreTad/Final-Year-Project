@@ -17,7 +17,7 @@ class DigitalMaterialSerializer(serializers.ModelSerializer):
     class Meta:
         model = DigitalMaterial
         fields = "__all__"
-        read_only_fields = ["created_by", "created_by_name"]
+        read_only_fields = ["created_by", "created_by_name","format","file_size"]
 
     def validate(self, attrs):
         request = self.context.get("request")

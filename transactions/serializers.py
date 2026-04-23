@@ -1,7 +1,10 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import Borrow, Reservation
-from user_mgt.models import Member
+from decimal import Decimal
+from django.conf import settings
+from django.db import transaction
+from .models import Borrow, Reservation, Return
+from user_mgt.models import User
 
 
 def _norm_role(role):
@@ -12,22 +15,24 @@ class ReservationSerializer(serializers.ModelSerializer):
 
     material_title = serializers.CharField(source="material_id.title", read_only=True)
     material_author = serializers.CharField(source="material_id.author", read_only=True)
+    member_id_number = serializers.CharField(source="member.id_number", required=False)
     class Meta:
         model = Reservation
         fields = [
             "id",
-            "member_id",
+            "member",
             "material_id",
             "reserve_date",
             "expiry_date",
             "status",
             "material_title",
             "material_author",
+            "member_id_number"
         ]
 
         read_only_fields = [
             "id",
-            "member_id",
+            "member",
             "reserve_date",
             "expiry_date",
             "status",
@@ -39,9 +44,7 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        member = getattr(user, "member", None)
-
-        if not member:
+        if not user or _norm_role(getattr(user, "role", None)) != "MEMBER":
             raise serializers.ValidationError("Only members can reserve materials.")
 
         material = attrs.get("material_id")
@@ -57,7 +60,7 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         # Prevent duplicate reservation
         existing = Reservation.objects.filter(
-            member_id=member,
+            member=user,
             material_id=material,
             status="RESERVED",
             expiry_date__gt=timezone.now()
@@ -86,12 +89,10 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        member = getattr(user, "member", None)
-
-        if not member:
+        if not user or _norm_role(getattr(user, "role", None)) != "MEMBER":
             raise serializers.ValidationError("Only members can create reservations.")
 
-        validated_data["member_id"] = member
+        validated_data["member"] = user
 
         validated_data["expiry_date"] = (
             timezone.now() + timezone.timedelta(hours=3)
@@ -102,15 +103,18 @@ class ReservationSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
     
 class BorrowSerializer(serializers.ModelSerializer):
+    member = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
+    member_id = serializers.CharField(source="member.id_number", read_only=True)
     material_title = serializers.CharField(source="material.title", read_only=True)
-    member_name = serializers.CharField(source="member.user_id.first_name", read_only=True)
-    member_id_number = serializers.CharField(write_only=True, required=False)
+    material_author = serializers.CharField(source="material.author", read_only=True)
+    member_name = serializers.CharField(source="member.first_name", read_only=True)
+
     class Meta:
         model = Borrow
         fields = [
             "id",
             "member",
-            "member_id_number",
+            "member_id",
             "material",
             "reservation",
             "borrow_date",
@@ -119,7 +123,12 @@ class BorrowSerializer(serializers.ModelSerializer):
             "created_by",
             "material_title",
             "member_name",
+            "material_author",
         ]
+        extra_kwargs = {
+            "member": {"required": False},
+            "material": {"required": False},
+        }
 
         read_only_fields = [
             "id",
@@ -127,52 +136,49 @@ class BorrowSerializer(serializers.ModelSerializer):
             "status",
             "created_by",
             "material_title",
+            "material_author",
             "member_name",
+            "due_date",
         ]
 
     def validate(self, attrs):
+        reservation = attrs.get("reservation")
 
-        member_id_number = attrs.get("member_id_number")
-        member = attrs.get("member")
-        if member_id_number and member:
-            raise serializers.ValidationError(
-                {"member_id_number": "Provide either member or member_id_number, not both."}
-            )
-        if member_id_number and not member:
-            member = Member.objects.filter(user_id__id_number=member_id_number).first()
-            if not member:
-                raise serializers.ValidationError(
-                    {"member_id_number": "No member found with that ID number."}
-                )
-            attrs["member"] = member
+        # 2. Handle Reservation logic (Overrides member/material)
+        if reservation:
+            if reservation.status != "RESERVED" or reservation.expiry_date <= timezone.now():
+                raise serializers.ValidationError({"reservation": "Reservation is inactive or expired."})
+            attrs["member"] = reservation.member
+            attrs["material"] = reservation.material_id
 
-        if not attrs.get("member"):
+        # 3. Final Check on the resolved member
+        final_member = attrs.get("member")
+        if not final_member:
             raise serializers.ValidationError({"member": "Member is required."})
 
+        # The Logic Gate: Check the role string
+        # We use .strip() and .upper() to ensure minor typos don't break it
+        user_role = _norm_role(getattr(final_member, "role", ""))
+        
+        if user_role != "MEMBER":
+            raise serializers.ValidationError({
+                "member": f"Validation failed. User role is '{getattr(final_member, 'role', 'N/A')}', but 'MEMBER' is required."
+            })
+
+        # 4. Material Availability
         material = attrs.get("material")
-        reservation = attrs.get("reservation")
-        # Check if material has available copies
-        if material.available_copies <= 0:
-            raise serializers.ValidationError(
-                {"material": "No available copies to borrow."}
-            )
-        # Validate reservation if provided
-        if reservation:
+        if not material:
+            raise serializers.ValidationError({"material": "Material is required."})
 
-            if reservation.status != "RESERVED":
-                raise serializers.ValidationError(
-                    {"reservation": "Reservation is not active."}
-                )
-
-            if reservation.material_id != material:
-                raise serializers.ValidationError(
-                    {"reservation": "Reservation does not match the material."}
-                )
+        # Do not trust cached available_copies alone; compute effective availability.
+        active_borrows = Borrow.objects.filter(material=material, returns__isnull=True).count()
+        effective_available = material.total_copies - active_borrows
+        if effective_available <= 0:
+            raise serializers.ValidationError({"material": "No available copies to borrow."})
 
         return attrs
 
     def create(self, validated_data):
-
         request = self.context.get("request")
         user = getattr(request, "user", None)
         if not user or _norm_role(getattr(user, "role", None)) != "STACKSTAFF":
@@ -181,21 +187,103 @@ class BorrowSerializer(serializers.ModelSerializer):
         staff = getattr(user, "staff", None)
         if not staff:
             raise serializers.ValidationError("Staff profile not found.")
-        validated_data.pop("member_id_number", None)
         material = validated_data["material"]
-
-        # decrease available copies
-        material.available_copies -= 1
-        material.save()
-
-        # set due date (example: 14 days)
-        validated_data["due_date"] = timezone.now() + timezone.timedelta(days=7)
-        validated_data["created_by"] = staff
         reservation = validated_data.get("reservation")
 
-        # if borrowed from reservation, expire reservation
-        if reservation:
-            reservation.status = "EXPIRED"
-            reservation.save()
+        with transaction.atomic():
+            locked_material = material.__class__.objects.select_for_update().get(pk=material.pk)
+            currently_borrowed = Borrow.objects.filter(
+                material=locked_material,
+                returns__isnull=True,
+            ).count()
+            available_after_borrow = locked_material.total_copies - (currently_borrowed + 1)
 
-        return super().create(validated_data)    
+            if available_after_borrow < 0:
+                raise serializers.ValidationError({"material": "No available copies to borrow."})
+
+            locked_material.available_copies = available_after_borrow
+            locked_material.save(update_fields=["available_copies"])
+
+            # set due date (example: 7 days)
+            validated_data["material"] = locked_material
+            validated_data["due_date"] = timezone.now() + timezone.timedelta(days=7)
+            validated_data["created_by"] = staff
+
+            # if borrowed from reservation, expire reservation
+            if reservation:
+                reservation.status = "EXPIRED"
+                reservation.save(update_fields=["status"])
+
+            return super().create(validated_data)
+
+
+class ReturnSerializer(serializers.ModelSerializer):
+    member = serializers.PrimaryKeyRelatedField(source="borrow.member", read_only=True)
+    material = serializers.PrimaryKeyRelatedField(source="borrow.material", read_only=True)
+    member_name = serializers.CharField(source="borrow.member.first_name", read_only=True)
+    material_title = serializers.CharField(source="borrow.material.title", read_only=True)
+    due_date = serializers.DateTimeField(source="borrow.due_date", read_only=True)
+
+    class Meta:
+        model = Return
+        fields = [
+            "id",
+            "borrow",
+            "member",
+            "member_name",
+            "material",
+            "material_title",
+            "due_date",
+            "return_date",
+            "fine_amount",
+            "created_by",
+        ]
+        read_only_fields = [
+            "id",
+            "member",
+            "member_name",
+            "material",
+            "material_title",
+            "due_date",
+            "return_date",
+            "fine_amount",
+            "created_by",
+        ]
+
+    def validate(self, attrs):
+        borrow = attrs.get("borrow")
+        if not borrow:
+            raise serializers.ValidationError({"borrow": "Borrow is required."})
+
+        if borrow.returns.exists():
+            raise serializers.ValidationError({"borrow": "This borrow has already been returned."})
+
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or _norm_role(getattr(user, "role", None)) != "STACKSTAFF":
+            raise serializers.ValidationError("Only STACK STAFF can record returns.")
+
+        staff = getattr(user, "staff", None)
+        if not staff:
+            raise serializers.ValidationError("Staff profile not found.")
+
+        borrow = validated_data["borrow"]
+        material = borrow.material
+        now = timezone.now()
+
+        overdue_days = max((now.date() - borrow.due_date.date()).days, 0)
+        daily_fine_rate = Decimal(str(getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0")))
+        validated_data["fine_amount"] = daily_fine_rate * overdue_days
+        validated_data["created_by"] = staff
+
+        material.available_copies = min(material.available_copies + 1, material.total_copies)
+        material.save(update_fields=["available_copies"])
+
+        if now > borrow.due_date and borrow.status != "OVERDUE":
+            borrow.status = "OVERDUE"
+            borrow.save(update_fields=["status"])
+
+        return super().create(validated_data)

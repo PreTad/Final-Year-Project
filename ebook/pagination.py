@@ -12,8 +12,6 @@ class PageNumberSizePagination(PageNumberPagination):
                     ("page", self.page.number),
                     ("number_of_pages", self.page.paginator.num_pages),
                     ("result", data),
-                    ("response", data),
-                    ("content", data),
                     ("totalElements", self.page.paginator.count),
                     ("totalPages", self.page.paginator.num_pages),
                     ("size", self.get_page_size(self.request)),

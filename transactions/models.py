@@ -6,8 +6,8 @@ from django.utils import timezone
 # Reservation Table
 class Reservation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    member_id = models.ForeignKey(
-        "backend.Member",
+    member = models.ForeignKey(
+        "backend.User",
         on_delete=models.PROTECT,
         related_name="reservations"
     )
@@ -29,14 +29,14 @@ class Reservation(models.Model):
         ordering = ["reserve_date"]
 
     def __str__(self):
-        return f"{self.member_id} reserved {self.material_id}"
+        return f"{self.member} reserved {self.material_id}"
     
 
 # Borrow Table
 class Borrow(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     member = models.ForeignKey(
-        "backend.Member",
+        "backend.User",
         on_delete=models.PROTECT,
         related_name="borrows"
     )
@@ -80,7 +80,7 @@ class Circulation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     member = models.ForeignKey(
-        "backend.Member",
+        "backend.User",
         on_delete=models.PROTECT,
         related_name="circulations"
     )

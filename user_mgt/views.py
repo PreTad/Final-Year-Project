@@ -1,10 +1,8 @@
-from rest_framework.generics import CreateAPIView
-from rest_framework.generics import DestroyAPIView
-from rest_framework.generics import ListAPIView
+from rest_framework.generics import CreateAPIView, DestroyAPIView, ListAPIView
+from django.conf import settings
 from django.contrib.auth import update_session_auth_hash
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import filters, status
 from rest_framework.views import APIView
@@ -17,19 +15,120 @@ from .permissions import CanCreateUsers, CanDeleteUsers, IsSuperAdminForWrite
 from .serializers import (
     AdminUserListSerializer,
     ChangePasswordSerializer,
+    ConfirmResetOTPSerializer,
     ForgotPasswordSerializer,
     LibrarySerializer,
     ResetPasswordSerializer,
     UserListSerializer,
     UserMeSerializer,
     UserCreateSerializer,
+    CustomTokenObtainPairSerializer,
 )
 
 from rest_framework_simplejwt.views import TokenObtainPairView
-from .serializers import CustomTokenObtainPairSerializer
+
+# --- Authentication Views ---
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+
+
+class ChangePasswordAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        if not user.check_password(serializer.validated_data["old_password"]):
+            raise ValidationError({"old_password": "Old password is incorrect."})
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        update_session_auth_hash(request, user)
+        return Response({"detail": "Password updated."}, status=status.HTTP_200_OK)
+
+
+# --- Password Reset Flow ---
+
+class ForgotPasswordAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        request=ForgotPasswordSerializer,
+        responses={200: {"type": "object", "properties": {"detail": {"type": "string"}}}},
+    )
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {"detail": "If an account with that email exists, a password reset OTP has been sent."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ConfirmResetOTPAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        request=ConfirmResetOTPSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "detail": {"type": "string"},
+                    "expires_in": {"type": "integer"},
+                    "confirm_token": {"type": "string"},
+                },
+            }
+        },
+    )
+    def post(self, request):
+        serializer = ConfirmResetOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.save()
+        
+        response = Response(
+            {
+                "detail": "OTP confirmed.",
+                "expires_in": data["expires_in"],
+                "confirm_token": data["confirm_token"],
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+        # Set the confirmation token in an HttpOnly cookie for security
+        response.set_cookie(
+            "password_reset_confirm_token",
+            data["confirm_token"],
+            max_age=data["expires_in"],
+            httponly=True,
+            samesite="Lax",
+            secure=not settings.DEBUG,  # True in production
+        )
+        return response
+
+
+class ResetPasswordAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        request=ResetPasswordSerializer,
+        responses={200: {"type": "object", "properties": {"detail": {"type": "string"}}}},
+    )
+    def post(self, request):
+        # We pass the request to context so the serializer can read the cookie
+        serializer = ResetPasswordSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        response = Response({"detail": "Password has been reset successfully."}, status=status.HTTP_200_OK)
+        # Clean up the session cookie after success
+        response.delete_cookie("password_reset_confirm_token")
+        return response
+
+
+# --- Library Management ---
 
 class LibraryViewSet(ModelViewSet):
     queryset = Library.objects.all()
@@ -64,11 +163,13 @@ class LibraryViewSet(ModelViewSet):
         return Response({"libraries": serializer.data, "admin_staffs": admin_staffs}, status=status.HTTP_200_OK)
 
 
+# --- User Management ---
+
 class UserCreateAPIView(CreateAPIView):
     serializer_class = UserCreateSerializer
     permission_classes = [IsAuthenticated, CanCreateUsers]
 
-# class GetA
+
 class UserDeleteAPIView(DestroyAPIView):
     queryset = User.objects.all()
     permission_classes = [IsAuthenticated, CanDeleteUsers]
@@ -90,28 +191,27 @@ class UserDeleteAPIView(DestroyAPIView):
             required=False,
             description="Search by first name or id.",
         ),
-        
     ]
 )
 class UserListAPIView(ListAPIView):
     serializer_class = UserListSerializer
-    # permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]
     filter_backends = [filters.SearchFilter]
-    search_fields = ['^first_name','=id_number']
+    search_fields = ['^first_name', '=id_number']
+
     def get_queryset(self):
         queryset = User.objects.all().order_by("first_name", "last_name", "id_number")
         role = self.request.query_params.get("role")
         search = self.request.query_params.get("search")
-        # id_number = self.request.query_params.get("id_number")
         
         if role:
-            queryset = queryset.filter(role__istartswith = role).order_by("first_name", "last_name", "id_number")
+            queryset = queryset.filter(role__istartswith=role).order_by("first_name", "last_name", "id_number")
         if search:
-            queryset = queryset.filter(Q(first_name__istartswith=search)  | Q(id_number__istartswith = search))
-        
+            queryset = queryset.filter(Q(first_name__istartswith=search) | Q(id_number__istartswith=search))
         
         return queryset
-    
+
+
 class AdminUsersAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -132,85 +232,15 @@ class AdminUsersAPIView(APIView):
         ]
         return Response(data, status=status.HTTP_200_OK)
 
-# class AdminUsersListAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def get(self, request):
-#         admins = User.objects.filter(
-#             role="ADMIN",
-#             staff__isnull=False,
-#             staff__library__isnull=True,
-#         ).order_by("first_name", "last_name")
-#         return Response(AdminUserListSerializer(admins, many=True).data, status=status.HTTP_200_OK)
-
-
-
-
-def _norm_role(role):
-    return "".join(str(role or "").upper().split())
-
-
-def _get_staff_profile_or_error(user):
-    staff_profile = getattr(user, "staff", None)
-    if staff_profile:
-        return staff_profile
-    return Staff.objects.create(user_id=user)
-
-
-class ChangePasswordAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        serializer = ChangePasswordSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = request.user
-        if not user.check_password(serializer.validated_data["old_password"]):
-            raise ValidationError({"old_password": "Old password is incorrect."})
-        user.set_password(serializer.validated_data["new_password"])
-        user.save(update_fields=["password"])
-        update_session_auth_hash(request, user)
-        return Response({"detail": "Password updated."}, status=status.HTTP_200_OK)
-
-
-class ForgotPasswordAPIView(APIView):
-    permission_classes = [AllowAny]
-
-    @extend_schema(
-        request=ForgotPasswordSerializer,
-        responses={200: {"type": "object", "properties": {"detail": {"type": "string"}}}},
-    )
-    def post(self, request):
-        serializer = ForgotPasswordSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(
-            {"detail": "If an account with that email exists, a reset link has been sent."},
-            status=status.HTTP_200_OK,
-        )
-
-
-class ResetPasswordAPIView(APIView):
-    permission_classes = [AllowAny]
-
-    @extend_schema(
-        request=ResetPasswordSerializer,
-        responses={200: {"type": "object", "properties": {"detail": {"type": "string"}}}},
-    )
-    def post(self, request):
-        serializer = ResetPasswordSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response({"detail": "Password has been reset successfully."}, status=status.HTTP_200_OK)
-
 
 class UserMeAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserMeSerializer(request.user).data, status=status.HTTP_200_OK)
+        return Response(UserMeSerializer(request.user, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request):
-        serializer = UserMeSerializer(request.user, data=request.data, partial=True)
+        serializer = UserMeSerializer(request.user, data=request.data, partial=True, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
