@@ -12,6 +12,7 @@ urlpatterns = [
     path("api/transactions/", include("transactions.urls")),
     path("api/payment/", include("payment.urls")),
     path("api/material/", include("material_mgt.urls")),
+    path("api/recommendations/", include("recommendation_system.urls")),
 ]
 
 if settings.DEBUG:

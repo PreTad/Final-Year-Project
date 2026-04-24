@@ -1,3 +1,5 @@
+import requests
+
 from rest_framework.generics import CreateAPIView
 from rest_framework.generics import DestroyAPIView
 from django.contrib.auth import update_session_auth_hash
@@ -8,6 +10,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+import os
 from material_mgt.models import *
 from material_mgt.serializers import *
 from user_mgt.models import Staff
@@ -83,3 +86,92 @@ class DigitalMaterialViewSet(ModelViewSet):
 
     def perform_update(self, serializer):
         serializer.save()
+
+
+
+
+
+class GenerateMaterialDescriptionAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        title = str(request.data.get("title", "")).strip()
+        author = str(request.data.get("author", "")).strip()
+
+        if not title or not author:
+            raise ValidationError({"detail": "Both title and author are required."})
+
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            return Response(
+                {"detail": "AI description service is not configured."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        model = os.getenv("OPENAI_DESCRIPTION_MODEL", "gpt-5-mini").strip() or "gpt-5-mini"
+
+        prompt = (
+            f"Title: {title}\n"
+            f"Author: {author}\n\n"
+            "Write a concise, helpful library catalog description (80-130 words). "
+            "Use clear, neutral language and avoid inventing specific facts."
+        )
+
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": prompt,
+                    "temperature": 0.7,
+                    "max_output_tokens": 220,
+                },
+                timeout=30,
+            )
+        except requests.RequestException:
+            return Response(
+                {"detail": "Failed to reach AI provider."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Handle HTTP errors from provider
+        if response.status_code >= 400:
+            try:
+                provider_error = response.json().get("error", {}).get("message", "")
+            except Exception:
+                provider_error = ""
+
+            return Response(
+                {"detail": provider_error or "AI provider returned an error."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Parse response safely (Responses API format)
+        try:
+            payload = response.json()
+        except ValueError:
+            return Response(
+                {"detail": "Invalid AI provider response."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        try:
+            description = payload["output"][0]["content"][0]["text"].strip()
+        except (KeyError, IndexError, TypeError):
+            description = ""
+
+        # Fallback if AI returns empty
+        if not description:
+            description = f"{title} by {author} is a library material available for borrowing."
+
+        return Response(
+            {
+                "description": description,
+                "model": model,
+            },
+            status=status.HTTP_200_OK,
+        )

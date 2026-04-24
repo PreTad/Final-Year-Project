@@ -18,6 +18,14 @@ from .serializers import ChapaInitPaymentSerializer, PaymentSerializer
 def _norm_role(role):
     return "".join(str(role or "").upper().split())
 
+
+def _append_query_param(url, key, value):
+    if not url:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}{key}={value}"
+
+
 def _chapa_request(method, path, payload=None):
     base_url = getattr(settings, "CHAPA_BASE_URL", "https://api.chapa.co").rstrip("/")
     secret_key = getattr(settings, "CHAPA_SECRET_KEY", os.getenv("CHAPA_SECRET_KEY", ""))
@@ -89,7 +97,11 @@ class ChapaInitializePaymentView(APIView):
             "last_name": member_user.last_name or "User",
             "tx_ref": tx_ref,
             "callback_url": serializer.validated_data.get("callback_url", getattr(settings, "CHAPA_CALLBACK_URL", "")),
-            "return_url": serializer.validated_data.get("return_url", getattr(settings, "CHAPA_RETURN_URL", "")),
+            "return_url": _append_query_param(
+                serializer.validated_data.get("return_url", getattr(settings, "CHAPA_RETURN_URL", "")),
+                "tx_ref",
+                tx_ref,
+            ),
             "customization": {
                 "title": "Library Fine Payment",
                 "description": f"Fine for return {return_obj.id}",

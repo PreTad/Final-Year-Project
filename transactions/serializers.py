@@ -108,6 +108,10 @@ class BorrowSerializer(serializers.ModelSerializer):
     material_title = serializers.CharField(source="material.title", read_only=True)
     material_author = serializers.CharField(source="material.author", read_only=True)
     member_name = serializers.CharField(source="member.first_name", read_only=True)
+    is_returned = serializers.SerializerMethodField()
+    return_id = serializers.SerializerMethodField()
+    returned_at = serializers.SerializerMethodField()
+    return_fine_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = Borrow
@@ -124,6 +128,10 @@ class BorrowSerializer(serializers.ModelSerializer):
             "material_title",
             "member_name",
             "material_author",
+            "is_returned",
+            "return_id",
+            "returned_at",
+            "return_fine_amount",
         ]
         extra_kwargs = {
             "member": {"required": False},
@@ -140,6 +148,22 @@ class BorrowSerializer(serializers.ModelSerializer):
             "member_name",
             "due_date",
         ]
+
+    def get_is_returned(self, obj):
+        latest_return = obj.returns.order_by("-return_date").first()
+        return bool(latest_return)
+
+    def get_return_id(self, obj):
+        latest_return = obj.returns.order_by("-return_date").first()
+        return latest_return.id if latest_return else None
+
+    def get_returned_at(self, obj):
+        latest_return = obj.returns.order_by("-return_date").first()
+        return latest_return.return_date if latest_return else None
+
+    def get_return_fine_amount(self, obj):
+        latest_return = obj.returns.order_by("-return_date").first()
+        return latest_return.fine_amount if latest_return else None
 
     def validate(self, attrs):
         reservation = attrs.get("reservation")
@@ -223,6 +247,8 @@ class ReturnSerializer(serializers.ModelSerializer):
     member_name = serializers.CharField(source="borrow.member.first_name", read_only=True)
     material_title = serializers.CharField(source="borrow.material.title", read_only=True)
     due_date = serializers.DateTimeField(source="borrow.due_date", read_only=True)
+    payment_status = serializers.SerializerMethodField()
+    payment_reference = serializers.SerializerMethodField()
 
     class Meta:
         model = Return
@@ -237,6 +263,8 @@ class ReturnSerializer(serializers.ModelSerializer):
             "return_date",
             "fine_amount",
             "created_by",
+            "payment_status",
+            "payment_reference",
         ]
         read_only_fields = [
             "id",
@@ -248,7 +276,20 @@ class ReturnSerializer(serializers.ModelSerializer):
             "return_date",
             "fine_amount",
             "created_by",
+            "payment_status",
+            "payment_reference",
         ]
+
+    def _latest_payment(self, obj):
+        return obj.payment.order_by("-payment_date").first()
+
+    def get_payment_status(self, obj):
+        latest_payment = self._latest_payment(obj)
+        return latest_payment.status if latest_payment else "UNPAID"
+
+    def get_payment_reference(self, obj):
+        latest_payment = self._latest_payment(obj)
+        return latest_payment.transaction_reference if latest_payment else None
 
     def validate(self, attrs):
         borrow = attrs.get("borrow")
@@ -282,8 +323,7 @@ class ReturnSerializer(serializers.ModelSerializer):
         material.available_copies = min(material.available_copies + 1, material.total_copies)
         material.save(update_fields=["available_copies"])
 
-        if now > borrow.due_date and borrow.status != "OVERDUE":
-            borrow.status = "OVERDUE"
-            borrow.save(update_fields=["status"])
+        borrow.status = "RETURNED"
+        borrow.save(update_fields=["status"])
 
         return super().create(validated_data)
