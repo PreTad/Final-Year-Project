@@ -24,6 +24,7 @@ class Reservation(models.Model):
         ("CANCELLED", "CANCELLED"),
     ]
     status = models.CharField(max_length=20, choices=STATUS, default="RESERVED")
+    availability_notified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["reserve_date"]
@@ -64,6 +65,7 @@ class Borrow(models.Model):
     ]
 
     status = models.CharField(max_length=20, choices=STATUS, default="BORROWED")
+    overdue_notified_at = models.DateTimeField(null=True, blank=True)
 
     created_by = models.ForeignKey(
         "backend.Staff",

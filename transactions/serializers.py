@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import transaction
 from .models import Borrow, Reservation, Return
+from .services import notify_reserved_members_material_available
 from user_mgt.models import User
 
 
@@ -326,4 +327,6 @@ class ReturnSerializer(serializers.ModelSerializer):
         borrow.status = "RETURNED"
         borrow.save(update_fields=["status"])
 
-        return super().create(validated_data)
+        return_record = super().create(validated_data)
+        transaction.on_commit(lambda: notify_reserved_members_material_available(material))
+        return return_record
