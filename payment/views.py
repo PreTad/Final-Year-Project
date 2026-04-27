@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 
 from .models import Payment
 from .serializers import ChapaInitPaymentSerializer, PaymentSerializer
+from transactions.services import finalize_return_for_borrow
 
 def _norm_role(role):
     return "".join(str(role or "").upper().split())
@@ -159,6 +160,10 @@ class ChapaVerifyPaymentView(APIView):
             payment.status = "FAILED"
 
         payment.save(update_fields=["status"])
+
+        if payment.status == "COMPLETED":
+            finalize_return_for_borrow(payment.return_id.borrow)
+
         return Response({
             "payment": PaymentSerializer(payment).data,
             "chapa_status": remote_status

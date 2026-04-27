@@ -4,3 +4,4 @@ from .models import *
 
 admin.site.register(Reservation)
 admin.site.register(Borrow)
+admin.site.register(Return)

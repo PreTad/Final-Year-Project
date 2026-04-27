@@ -1,4 +1,7 @@
 from django.db import models
+from django.conf import settings
+from django.db.models import Q
+from django.core.validators import MaxValueValidator, MinValueValidator
 import uuid
 import os
 # Create your models here.
@@ -99,4 +102,167 @@ class PhysicalMaterial (models.Model):
     
     def __str__(self):
         return self.title
+
+
+class MaterialFeedback(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="material_feedbacks",
+    )
+    physical_material = models.ForeignKey(
+        "material_mgt.PhysicalMaterial",
+        on_delete=models.CASCADE,
+        related_name="feedbacks",
+        null=True,
+        blank=True,
+    )
+    digital_material = models.ForeignKey(
+        "material_mgt.DigitalMaterial",
+        on_delete=models.CASCADE,
+        related_name="feedbacks",
+        null=True,
+        blank=True,
+    )
+    rating = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    comment = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["user", "updated_at"]),
+            models.Index(fields=["physical_material", "updated_at"]),
+            models.Index(fields=["digital_material", "updated_at"]),
+            models.Index(fields=["rating"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name="material_feedback_exactly_one_material",
+                condition=(
+                    (Q(physical_material__isnull=False) & Q(digital_material__isnull=True))
+                    | (Q(physical_material__isnull=True) & Q(digital_material__isnull=False))
+                ),
+            ),
+            models.CheckConstraint(
+                name="material_feedback_rating_range",
+                condition=Q(rating__gte=1, rating__lte=5),
+            ),
+            models.UniqueConstraint(
+                fields=["user", "physical_material"],
+                condition=Q(physical_material__isnull=False),
+                name="material_feedback_unique_user_physical",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "digital_material"],
+                condition=Q(digital_material__isnull=False),
+                name="material_feedback_unique_user_digital",
+            ),
+        ]
+
+
+class MaterialFavorite(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="material_favorites",
+    )
+    physical_material = models.ForeignKey(
+        "material_mgt.PhysicalMaterial",
+        on_delete=models.CASCADE,
+        related_name="favorites",
+        null=True,
+        blank=True,
+    )
+    digital_material = models.ForeignKey(
+        "material_mgt.DigitalMaterial",
+        on_delete=models.CASCADE,
+        related_name="favorites",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["physical_material", "created_at"]),
+            models.Index(fields=["digital_material", "created_at"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name="material_favorite_exactly_one_material",
+                condition=(
+                    (Q(physical_material__isnull=False) & Q(digital_material__isnull=True))
+                    | (Q(physical_material__isnull=True) & Q(digital_material__isnull=False))
+                ),
+            ),
+            models.UniqueConstraint(
+                fields=["user", "physical_material"],
+                condition=Q(physical_material__isnull=False),
+                name="material_favorite_unique_user_physical",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "digital_material"],
+                condition=Q(digital_material__isnull=False),
+                name="material_favorite_unique_user_digital",
+            ),
+        ]
+
+
+class MaterialBookmark(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="material_bookmarks",
+    )
+    physical_material = models.ForeignKey(
+        "material_mgt.PhysicalMaterial",
+        on_delete=models.CASCADE,
+        related_name="bookmarks",
+        null=True,
+        blank=True,
+    )
+    digital_material = models.ForeignKey(
+        "material_mgt.DigitalMaterial",
+        on_delete=models.CASCADE,
+        related_name="bookmarks",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["physical_material", "created_at"]),
+            models.Index(fields=["digital_material", "created_at"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                name="material_bookmark_exactly_one_material",
+                condition=(
+                    (Q(physical_material__isnull=False) & Q(digital_material__isnull=True))
+                    | (Q(physical_material__isnull=True) & Q(digital_material__isnull=False))
+                ),
+            ),
+            models.UniqueConstraint(
+                fields=["user", "physical_material"],
+                condition=Q(physical_material__isnull=False),
+                name="material_bookmark_unique_user_physical",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "digital_material"],
+                condition=Q(digital_material__isnull=False),
+                name="material_bookmark_unique_user_digital",
+            ),
+        ]
     

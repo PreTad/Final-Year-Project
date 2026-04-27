@@ -4,9 +4,9 @@ from typing import List
 from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
+from django.db import transaction
 
 from .models import Borrow, Reservation
-
 
 @dataclass
 class OverdueNotificationSummary:
@@ -16,22 +16,34 @@ class OverdueNotificationSummary:
     skipped_missing_email: int = 0
     errors: List[str] = field(default_factory=list)
 
+@dataclass
+class ReservationNotificationSummary:
+    material_id: str
+    scanned: int = 0
+    emailed: int = 0
+    skipped_missing_email: int = 0
+    errors: List[str] = field(default_factory=list)
 
 def process_overdue_borrows_and_notify():
+    """
+    Main entry point for cron jobs to sync statuses and email users.
+    """
     now = timezone.now()
     summary = OverdueNotificationSummary()
 
+    # 1. First, sync the database status for all overdue items
+    summary.status_updated = sync_overdue_borrow_statuses(now=now)
+
+    # 2. Fetch those that need notification
     overdue_qs = Borrow.objects.select_related("member", "material").filter(
         returns__isnull=True,
         due_date__lt=now,
+        overdue_notified_at__isnull=True
     )
+    
     summary.scanned = overdue_qs.count()
 
-    # Keep borrow status aligned with current time.
-    summary.status_updated = overdue_qs.exclude(status="OVERDUE").update(status="OVERDUE")
-
-    to_notify = overdue_qs.filter(overdue_notified_at__isnull=True)
-    for borrow in to_notify:
+    for borrow in overdue_qs:
         member_email = (borrow.member.email or "").strip()
         if not member_email:
             summary.skipped_missing_email += 1
@@ -39,6 +51,7 @@ def process_overdue_borrows_and_notify():
 
         overdue_days = (now.date() - borrow.due_date.date()).days
         member_name = (borrow.member.first_name or borrow.member.id_number).strip()
+        
         subject = "Library Notice: Borrowed Material Is Overdue"
         message = (
             f"Dear {member_name},\n\n"
@@ -66,45 +79,51 @@ def process_overdue_borrows_and_notify():
 
     return summary
 
-
-@dataclass
-class ReservationAvailabilitySummary:
-    queued: int = 0
-    notified: int = 0
-    skipped_missing_email: int = 0
-    errors: List[str] = field(default_factory=list)
-
+def sync_overdue_borrow_statuses(base_queryset=None, now=None):
+    """
+    Updates the database 'status' column to OVERDUE for items past their due date.
+    """
+    now = now or timezone.now()
+    queryset = base_queryset if base_queryset is not None else Borrow.objects.all()
+    
+    overdue_qs = queryset.filter(
+        returns__isnull=True,
+        due_date__lt=now,
+    ).exclude(status="OVERDUE")
+    
+    return overdue_qs.update(status="OVERDUE")
 
 def notify_reserved_members_material_available(material):
+    """
+    Notify active reservation holders that a material copy became available.
+    """
     now = timezone.now()
-    summary = ReservationAvailabilitySummary()
+    summary = ReservationNotificationSummary(material_id=str(material.pk))
 
-    open_slots = max(int(getattr(material, "available_copies", 0)), 0)
-    if open_slots <= 0:
-        return summary
-
-    reservations = Reservation.objects.select_related("member").filter(
+    active_reservations = Reservation.objects.select_related("member", "material_id").filter(
         material_id=material,
         status="RESERVED",
         expiry_date__gt=now,
         availability_notified_at__isnull=True,
-    ).order_by("reserve_date")[:open_slots]
+    ).order_by("reserve_date")
 
-    summary.queued = len(reservations)
-    for reservation in reservations:
+    summary.scanned = active_reservations.count()
+
+    for reservation in active_reservations:
         member_email = (reservation.member.email or "").strip()
         if not member_email:
             summary.skipped_missing_email += 1
             continue
 
         member_name = (reservation.member.first_name or reservation.member.id_number).strip()
-        subject = "Library Notice: Reserved Material Is Now Available"
+        subject = "Library Update: Reserved Material Is Available"
         message = (
             f"Dear {member_name},\n\n"
-            f"The material you reserved, '{material.title}', is now available.\n"
-            "Please borrow it as soon as possible before your reservation expires.\n\n"
+            f"The material you reserved, '{reservation.material_id.title}', is now available.\n"
+            "Please visit the library promptly to borrow it.\n\n"
             "Thank you."
         )
+
         try:
             send_mail(
                 subject=subject,
@@ -115,8 +134,42 @@ def notify_reserved_members_material_available(material):
             )
             reservation.availability_notified_at = now
             reservation.save(update_fields=["availability_notified_at"])
-            summary.notified += 1
+            summary.emailed += 1
         except Exception as exc:
             summary.errors.append(f"Reservation {reservation.id}: {exc}")
 
     return summary
+
+
+def calculate_overdue_days(due_date, now=None):
+    """
+    Return overdue days as full/partial day units once due_date has passed.
+    Any delay beyond due_date counts as at least 1 overdue day.
+    """
+    now = now or timezone.now()
+    if now <= due_date:
+        return 0
+
+    overdue_seconds = (now - due_date).total_seconds()
+    return int((overdue_seconds + 86399) // 86400)
+
+
+def finalize_return_for_borrow(borrow):
+    """
+    Mark borrow as returned and release one copy back to inventory atomically.
+    Safe to call repeatedly; only applies changes when borrow is not RETURNED.
+    """
+    with transaction.atomic():
+        locked_borrow = Borrow.objects.select_for_update().select_related("material").get(pk=borrow.pk)
+        if locked_borrow.status == "RETURNED":
+            return locked_borrow
+
+        material = locked_borrow.material.__class__.objects.select_for_update().get(pk=locked_borrow.material.pk)
+        material.available_copies = min(material.available_copies + 1, material.total_copies)
+        material.save(update_fields=["available_copies"])
+
+        locked_borrow.status = "RETURNED"
+        locked_borrow.save(update_fields=["status"])
+
+        transaction.on_commit(lambda: notify_reserved_members_material_available(material))
+        return locked_borrow

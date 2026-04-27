@@ -7,6 +7,7 @@ from django.utils import timezone
 from material_mgt.models import *
 from user_mgt.models import Staff
 from .serializers import *
+from .services import sync_overdue_borrow_statuses
 from user_mgt.permissions import *
 # Create your views here.
 
@@ -57,6 +58,7 @@ class BorrowViewSet(ModelViewSet):
     permission_classes = [IsStackStaffForWrite]
 
     def get_queryset(self):
+        sync_overdue_borrow_statuses()
         queryset = Borrow.objects.select_related("member", "material", "created_by").all().order_by("-borrow_date")
         user = self.request.user
         if _norm_role(getattr(user, "role", None)) == "MEMBER":
@@ -68,6 +70,7 @@ class BorrowViewSet(ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="my")
     def my(self, request):
+        sync_overdue_borrow_statuses()
         user = request.user
         if not user or not user.is_authenticated:
             return Response(

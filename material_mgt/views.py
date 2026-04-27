@@ -1,10 +1,11 @@
 import requests
+from django.db.models import Avg, Count, Q
 
 from rest_framework.generics import CreateAPIView
 from rest_framework.generics import DestroyAPIView
 from django.contrib.auth import update_session_auth_hash
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, SAFE_METHODS, BasePermission
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
@@ -19,6 +20,40 @@ from user_mgt.permissions import *
 
 def _norm_role(role):
     return "".join(str(role or "").upper().split())
+
+
+def _parse_bool(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _resolve_material_or_error(material_type, material_id):
+    material_type_norm = str(material_type or "").strip().lower()
+
+    if material_type_norm == "physical":
+        material = PhysicalMaterial.objects.filter(pk=material_id).first()
+        if not material:
+            raise ValidationError({"material_id": "Physical material not found."})
+        return material_type_norm, material
+
+    if material_type_norm == "digital":
+        material = DigitalMaterial.objects.filter(pk=material_id).first()
+        if not material:
+            raise ValidationError({"material_id": "Digital material not found."})
+        return material_type_norm, material
+
+    raise ValidationError({"material_type": "Use either 'physical' or 'digital'."})
+
+
+class IsOwnerOrReadOnly(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        return obj.user_id == request.user.id
 
 
 def _get_staff_profile_or_error(user):
@@ -87,6 +122,184 @@ class DigitalMaterialViewSet(ModelViewSet):
     def perform_update(self, serializer):
         serializer.save()
 
+
+class MaterialFeedbackViewSet(ModelViewSet):
+    serializer_class = MaterialFeedbackSerializer
+    permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
+    queryset = MaterialFeedback.objects.select_related("user", "physical_material", "digital_material")
+
+    def get_queryset(self):
+        queryset = self.queryset
+
+        material_type = self.request.query_params.get("material_type")
+        material_id = self.request.query_params.get("material_id")
+        mine_only = _parse_bool(self.request.query_params.get("mine"), default=False)
+
+        if mine_only:
+            queryset = queryset.filter(user=self.request.user)
+
+        if bool(material_type) ^ bool(material_id):
+            raise ValidationError(
+                {"detail": "Provide material_type and material_id together."}
+            )
+
+        if material_type and material_id:
+            material_type_norm = material_type.strip().lower()
+            if material_type_norm == "physical":
+                queryset = queryset.filter(physical_material_id=material_id)
+            elif material_type_norm == "digital":
+                queryset = queryset.filter(digital_material_id=material_id)
+            else:
+                raise ValidationError({"material_type": "Use either 'physical' or 'digital'."})
+
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class MaterialFavoriteViewSet(ModelViewSet):
+    serializer_class = MaterialFavoriteSerializer
+    permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
+    queryset = MaterialFavorite.objects.select_related("user", "physical_material", "digital_material")
+
+    def get_queryset(self):
+        queryset = self.queryset.filter(user=self.request.user)
+
+        material_type = self.request.query_params.get("material_type")
+        material_id = self.request.query_params.get("material_id")
+        if bool(material_type) ^ bool(material_id):
+            raise ValidationError(
+                {"detail": "Provide material_type and material_id together."}
+            )
+        if material_type and material_id:
+            material_type_norm = material_type.strip().lower()
+            if material_type_norm == "physical":
+                queryset = queryset.filter(physical_material_id=material_id)
+            elif material_type_norm == "digital":
+                queryset = queryset.filter(digital_material_id=material_id)
+            else:
+                raise ValidationError({"material_type": "Use either 'physical' or 'digital'."})
+
+        return queryset
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        physical_material = serializer.validated_data.get("physical_material")
+        digital_material = serializer.validated_data.get("digital_material")
+
+        favorite, created = MaterialFavorite.objects.get_or_create(
+            user=request.user,
+            physical_material=physical_material,
+            digital_material=digital_material,
+        )
+
+        output = self.get_serializer(favorite)
+        return Response(
+            output.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class MaterialBookmarkViewSet(ModelViewSet):
+    serializer_class = MaterialBookmarkSerializer
+    permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
+    queryset = MaterialBookmark.objects.select_related("user", "physical_material", "digital_material")
+
+    def get_queryset(self):
+        queryset = self.queryset.filter(user=self.request.user)
+
+        material_type = self.request.query_params.get("material_type")
+        material_id = self.request.query_params.get("material_id")
+        if bool(material_type) ^ bool(material_id):
+            raise ValidationError(
+                {"detail": "Provide material_type and material_id together."}
+            )
+        if material_type and material_id:
+            material_type_norm = material_type.strip().lower()
+            if material_type_norm == "physical":
+                queryset = queryset.filter(physical_material_id=material_id)
+            elif material_type_norm == "digital":
+                queryset = queryset.filter(digital_material_id=material_id)
+            else:
+                raise ValidationError({"material_type": "Use either 'physical' or 'digital'."})
+
+        return queryset
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        physical_material = serializer.validated_data.get("physical_material")
+        digital_material = serializer.validated_data.get("digital_material")
+
+        bookmark, created = MaterialBookmark.objects.get_or_create(
+            user=request.user,
+            physical_material=physical_material,
+            digital_material=digital_material,
+        )
+
+        output = self.get_serializer(bookmark)
+        return Response(
+            output.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class MaterialInteractionStatsAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        material_type = request.query_params.get("material_type")
+        material_id = request.query_params.get("material_id")
+
+        if not material_type or not material_id:
+            raise ValidationError({"detail": "material_type and material_id are required."})
+
+        material_type_norm, material = _resolve_material_or_error(material_type, material_id)
+
+        feedback_qs = MaterialFeedback.objects.all()
+        favorites_qs = MaterialFavorite.objects.all()
+        bookmarks_qs = MaterialBookmark.objects.all()
+
+        if material_type_norm == "physical":
+            feedback_qs = feedback_qs.filter(physical_material=material)
+            favorites_qs = favorites_qs.filter(physical_material=material)
+            bookmarks_qs = bookmarks_qs.filter(physical_material=material)
+            mine_filter = {"physical_material": material, "user": request.user}
+        else:
+            feedback_qs = feedback_qs.filter(digital_material=material)
+            favorites_qs = favorites_qs.filter(digital_material=material)
+            bookmarks_qs = bookmarks_qs.filter(digital_material=material)
+            mine_filter = {"digital_material": material, "user": request.user}
+
+        aggregate = feedback_qs.aggregate(
+            average_rating=Avg("rating"),
+            ratings_count=Count("id"),
+            comments_count=Count("id", filter=~Q(comment="")),
+        )
+
+        my_feedback = MaterialFeedback.objects.filter(**mine_filter).first()
+
+        return Response(
+            {
+                "material_type": material_type_norm,
+                "material_id": str(material.id),
+                "material_title": material.title,
+                "average_rating": round(float(aggregate["average_rating"] or 0), 2),
+                "ratings_count": int(aggregate["ratings_count"] or 0),
+                "comments_count": int(aggregate["comments_count"] or 0),
+                "favorites_count": favorites_qs.count(),
+                "bookmarks_count": bookmarks_qs.count(),
+                "is_favorited": MaterialFavorite.objects.filter(**mine_filter).exists(),
+                "is_bookmarked": MaterialBookmark.objects.filter(**mine_filter).exists(),
+                "my_rating": my_feedback.rating if my_feedback else None,
+                "my_comment": my_feedback.comment if my_feedback else "",
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 

@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import transaction
 from .models import Borrow, Reservation, Return
-from .services import notify_reserved_members_material_available
+from .services import calculate_overdue_days, finalize_return_for_borrow
 from user_mgt.models import User
 
 
@@ -109,10 +109,11 @@ class BorrowSerializer(serializers.ModelSerializer):
     material_title = serializers.CharField(source="material.title", read_only=True)
     material_author = serializers.CharField(source="material.author", read_only=True)
     member_name = serializers.CharField(source="member.first_name", read_only=True)
+    estimated_fine_amount = serializers.SerializerMethodField()
     is_returned = serializers.SerializerMethodField()
     return_id = serializers.SerializerMethodField()
     returned_at = serializers.SerializerMethodField()
-    return_fine_amount = serializers.SerializerMethodField()
+    final_fine_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = Borrow
@@ -124,6 +125,7 @@ class BorrowSerializer(serializers.ModelSerializer):
             "reservation",
             "borrow_date",
             "due_date",
+            "estimated_fine_amount",
             "status",
             "created_by",
             "material_title",
@@ -132,7 +134,7 @@ class BorrowSerializer(serializers.ModelSerializer):
             "is_returned",
             "return_id",
             "returned_at",
-            "return_fine_amount",
+            "final_fine_amount",
         ]
         extra_kwargs = {
             "member": {"required": False},
@@ -151,20 +153,30 @@ class BorrowSerializer(serializers.ModelSerializer):
         ]
 
     def get_is_returned(self, obj):
-        latest_return = obj.returns.order_by("-return_date").first()
-        return bool(latest_return)
+        return obj.status == "RETURNED"
 
     def get_return_id(self, obj):
         latest_return = obj.returns.order_by("-return_date").first()
         return latest_return.id if latest_return else None
 
     def get_returned_at(self, obj):
+        if obj.status != "RETURNED":
+            return None
         latest_return = obj.returns.order_by("-return_date").first()
         return latest_return.return_date if latest_return else None
 
-    def get_return_fine_amount(self, obj):
+    def get_final_fine_amount(self, obj):
         latest_return = obj.returns.order_by("-return_date").first()
         return latest_return.fine_amount if latest_return else None
+
+    def get_estimated_fine_amount(self, obj):
+        latest_return = obj.returns.order_by("-return_date").first()
+        if latest_return:
+            return latest_return.fine_amount
+
+        overdue_days = 3
+        daily_fine_rate = Decimal(str(getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0")))
+        return daily_fine_rate * overdue_days
 
     def validate(self, attrs):
         reservation = attrs.get("reservation")
@@ -231,7 +243,7 @@ class BorrowSerializer(serializers.ModelSerializer):
 
             # set due date (example: 7 days)
             validated_data["material"] = locked_material
-            validated_data["due_date"] = timezone.now() + timezone.timedelta(days=7)
+            validated_data["due_date"] = timezone.now() + timezone.timedelta(minutes=2)
             validated_data["created_by"] = staff
 
             # if borrowed from reservation, expire reservation
@@ -313,20 +325,18 @@ class ReturnSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Staff profile not found.")
 
         borrow = validated_data["borrow"]
-        material = borrow.material
         now = timezone.now()
 
-        overdue_days = max((now.date() - borrow.due_date.date()).days, 0)
+        overdue_days = calculate_overdue_days(borrow.due_date, now=now)
         daily_fine_rate = Decimal(str(getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0")))
         validated_data["fine_amount"] = daily_fine_rate * overdue_days
         validated_data["created_by"] = staff
 
-        material.available_copies = min(material.available_copies + 1, material.total_copies)
-        material.save(update_fields=["available_copies"])
-
-        borrow.status = "RETURNED"
-        borrow.save(update_fields=["status"])
-
         return_record = super().create(validated_data)
-        transaction.on_commit(lambda: notify_reserved_members_material_available(material))
+
+        # Finalize immediately only when no fine is due.
+        # If fine exists, payment verification will finalize the return.
+        if return_record.fine_amount <= 0:
+            finalize_return_for_borrow(borrow)
+
         return return_record

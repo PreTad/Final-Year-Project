@@ -63,7 +63,7 @@ class Borrow(models.Model):
         ("OVERDUE", "OVERDUE"),
         ("RETURNED", "RETURNED"),
     ]
-
+    # ovrrdue_amount = 
     status = models.CharField(max_length=20, choices=STATUS, default="BORROWED")
     overdue_notified_at = models.DateTimeField(null=True, blank=True)
 
