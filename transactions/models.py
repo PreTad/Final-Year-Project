@@ -134,3 +134,28 @@ class Return(models.Model):
         blank=True,
         related_name="returns_created"
     )
+
+
+class PolicyConfiguration(models.Model):
+    """
+    Singleton-style policy record for configurable library behavior.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    daily_fine_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    borrow_duration_minutes = models.PositiveIntegerField(default=2)
+    reservation_expiry_hours = models.PositiveIntegerField(default=3)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        "backend.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_policy_configurations",
+    )
+
+    class Meta:
+        verbose_name = "Policy Configuration"
+        verbose_name_plural = "Policy Configurations"
+
+    def __str__(self):
+        return "Library Policy Configuration"

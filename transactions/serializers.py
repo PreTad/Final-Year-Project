@@ -1,11 +1,10 @@
 from rest_framework import serializers
 from django.utils import timezone
-from decimal import Decimal
-from django.conf import settings
 from django.db import transaction
-from .models import Borrow, Reservation, Return
+from .models import Borrow, Reservation, Return, PolicyConfiguration
 from .services import calculate_overdue_days, finalize_return_for_borrow
 from user_mgt.models import User
+from .policy import get_policy_configuration
 
 
 def _norm_role(role):
@@ -95,8 +94,9 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         validated_data["member"] = user
 
-        validated_data["expiry_date"] = (
-            timezone.now() + timezone.timedelta(hours=3)
+        policy = get_policy_configuration()
+        validated_data["expiry_date"] = timezone.now() + timezone.timedelta(
+            hours=policy.reservation_expiry_hours
         )
 
         validated_data["status"] = "RESERVED"
@@ -175,7 +175,8 @@ class BorrowSerializer(serializers.ModelSerializer):
             return latest_return.fine_amount
 
         overdue_days = 3
-        daily_fine_rate = Decimal(str(getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0")))
+        policy = get_policy_configuration()
+        daily_fine_rate = policy.daily_fine_rate
         return daily_fine_rate * overdue_days
 
     def validate(self, attrs):
@@ -243,7 +244,10 @@ class BorrowSerializer(serializers.ModelSerializer):
 
             # set due date (example: 7 days)
             validated_data["material"] = locked_material
-            validated_data["due_date"] = timezone.now() + timezone.timedelta(minutes=2)
+            policy = get_policy_configuration()
+            validated_data["due_date"] = timezone.now() + timezone.timedelta(
+                minutes=policy.borrow_duration_minutes
+            )
             validated_data["created_by"] = staff
 
             # if borrowed from reservation, expire reservation
@@ -252,7 +256,6 @@ class BorrowSerializer(serializers.ModelSerializer):
                 reservation.save(update_fields=["status"])
 
             return super().create(validated_data)
-
 
 class ReturnSerializer(serializers.ModelSerializer):
     member = serializers.PrimaryKeyRelatedField(source="borrow.member", read_only=True)
@@ -328,7 +331,8 @@ class ReturnSerializer(serializers.ModelSerializer):
         now = timezone.now()
 
         overdue_days = calculate_overdue_days(borrow.due_date, now=now)
-        daily_fine_rate = Decimal(str(getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0")))
+        policy = get_policy_configuration()
+        daily_fine_rate = policy.daily_fine_rate
         validated_data["fine_amount"] = daily_fine_rate * overdue_days
         validated_data["created_by"] = staff
 
@@ -340,3 +344,19 @@ class ReturnSerializer(serializers.ModelSerializer):
             finalize_return_for_borrow(borrow)
 
         return return_record
+
+
+class PolicyConfigurationSerializer(serializers.ModelSerializer):
+    updated_by = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = PolicyConfiguration
+        fields = [
+            "id",
+            "daily_fine_rate",
+            "borrow_duration_minutes",
+            "reservation_expiry_hours",
+            "updated_at",
+            "updated_by",
+        ]
+        read_only_fields = ["id", "updated_at", "updated_by"]

@@ -103,3 +103,38 @@ class ReturnViewSet(ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save()
+
+
+class PolicyConfigurationViewSet(ModelViewSet):
+    serializer_class = PolicyConfigurationSerializer
+    permission_classes = [IsSuperAdminForWrite]
+
+    def get_queryset(self):
+        qs = PolicyConfiguration.objects.order_by("-updated_at")
+        active = qs.first()
+        if not active:
+            return PolicyConfiguration.objects.none()
+        return PolicyConfiguration.objects.filter(pk=active.pk)
+
+    def list(self, request, *args, **kwargs):
+        instance = PolicyConfiguration.objects.order_by("-updated_at").first()
+        if not instance:
+            instance = PolicyConfiguration.objects.create(updated_by=request.user)
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def create(self, request, *args, **kwargs):
+        existing = PolicyConfiguration.objects.order_by("-updated_at").first()
+        if existing:
+            serializer = self.get_serializer(existing, data=request.data, partial=False)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(updated_by=request.user)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
