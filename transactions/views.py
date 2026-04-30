@@ -5,14 +5,12 @@ from rest_framework.decorators import action
 from rest_framework import status
 from django.utils import timezone
 from material_mgt.models import *
+from user_mgt.access import get_user_library, is_super_admin, normalize_role
 from user_mgt.models import Staff
 from .serializers import *
 from .services import sync_overdue_borrow_statuses
 from user_mgt.permissions import *
 # Create your views here.
-
-def _norm_role(role):
-    return "".join(str(role or "").upper().split())
 
 
 def _get_staff_profile_or_error(user):
@@ -22,7 +20,7 @@ def _get_staff_profile_or_error(user):
     return Staff.objects.create(user_id=user)
 
 class ReservationViewSet(ModelViewSet):
-    queryset = Reservation.objects.all()
+    queryset = Reservation.objects.select_related("member__library", "material_id__library").all()
     serializer_class = ReservationSerializer
     # permission_classes = [IsAuthenticated]
 
@@ -33,10 +31,15 @@ class ReservationViewSet(ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base_qs = Reservation.objects.all()
+        base_qs = Reservation.objects.select_related("member__library", "material_id__library").all()
         self._expire_overdue(base_qs)
-        if _norm_role(getattr(user, "role", None)) == "MEMBER":
-            return Reservation.objects.filter(member=user)
+        if normalize_role(getattr(user, "role", None)) == "MEMBER":
+            return base_qs.filter(member=user)
+        if not is_super_admin(user):
+            actor_library = get_user_library(user)
+            if not actor_library:
+                return base_qs.none()
+            return base_qs.filter(material_id__library=actor_library)
         return base_qs
 
     def perform_create(self, serializer):
@@ -53,16 +56,21 @@ class ReservationViewSet(ModelViewSet):
         return Response(status=204)
 class BorrowViewSet(ModelViewSet):
     
-    queryset = Borrow.objects.all().order_by("-borrow_date")
+    queryset = Borrow.objects.select_related("member__library", "material__library", "created_by__user_id").all().order_by("-borrow_date")
     serializer_class = BorrowSerializer
     permission_classes = [IsStackStaffForWrite]
 
     def get_queryset(self):
         sync_overdue_borrow_statuses()
-        queryset = Borrow.objects.select_related("member", "material", "created_by").all().order_by("-borrow_date")
+        queryset = Borrow.objects.select_related("member__library", "material__library", "created_by__user_id").all().order_by("-borrow_date")
         user = self.request.user
-        if _norm_role(getattr(user, "role", None)) == "MEMBER":
+        if normalize_role(getattr(user, "role", None)) == "MEMBER":
             return queryset.filter(member=user)
+        if not is_super_admin(user):
+            actor_library = get_user_library(user)
+            if not actor_library:
+                return queryset.none()
+            return queryset.filter(material__library=actor_library)
         return queryset
 
     def perform_create(self, serializer):
@@ -78,7 +86,7 @@ class BorrowViewSet(ModelViewSet):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        queryset = Borrow.objects.select_related("member", "material", "created_by").filter(member=user).order_by("-borrow_date")
+        queryset = Borrow.objects.select_related("member__library", "material__library", "created_by__user_id").filter(member=user).order_by("-borrow_date")
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -90,15 +98,20 @@ class BorrowViewSet(ModelViewSet):
 
 class ReturnViewSet(ModelViewSet):
 
-    queryset = Return.objects.all().order_by("-return_date")
+    queryset = Return.objects.select_related("borrow__member__library", "borrow__material__library", "created_by__user_id").all().order_by("-return_date")
     serializer_class = ReturnSerializer
     # permission_classes = [IsStackStaffForWrite]
 
     def get_queryset(self):
         user = self.request.user
-        base_qs = Return.objects.all().order_by("-return_date")
-        if _norm_role(getattr(user, "role", None)) == "MEMBER":
+        base_qs = Return.objects.select_related("borrow__member__library", "borrow__material__library", "created_by__user_id").all().order_by("-return_date")
+        if normalize_role(getattr(user, "role", None)) == "MEMBER":
             return base_qs.filter(borrow__member=user)
+        if not is_super_admin(user):
+            actor_library = get_user_library(user)
+            if not actor_library:
+                return base_qs.none()
+            return base_qs.filter(borrow__material__library=actor_library)
         return base_qs
 
     def perform_create(self, serializer):

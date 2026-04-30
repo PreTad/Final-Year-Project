@@ -8,22 +8,26 @@ from .views import (
     CustomTokenObtainPairView,
     ForgotPasswordAPIView,
     LibraryViewSet,
+    LibraryPolicyViewSet,
     ResetPasswordAPIView,
     UserMeAPIView,
     UserCreateAPIView,
     UserDeleteAPIView,
     UserListAPIView,
+    UserUpdateAPIView,
     AdminUsersAPIView,
 )
 
 router = DefaultRouter()
 router.register("libraries", LibraryViewSet, basename="library")
+router.register("library-policies", LibraryPolicyViewSet, basename="library-policy")
 urlpatterns = [
     path("", include(router.urls)),
     path("users/admins/", AdminUsersAPIView.as_view(), name="users-admins"),
     path("users/create/", UserCreateAPIView.as_view(), name="user-create"),
     path("users/all", UserListAPIView.as_view(), name="user-list"),
     path("users/admins/", AdminUsersAPIView.as_view(), name="user-admins"),
+    path("users/update/<uuid:pk>/", UserUpdateAPIView.as_view(), name="user-update"),
     path("users/<uuid:pk>/delete/", UserDeleteAPIView.as_view(), name="user-delete"),
     path("auth/password/", ChangePasswordAPIView.as_view(), name="auth-change-password"),
     path("auth/forgot-password/", ForgotPasswordAPIView.as_view(), name="auth-forgot-password"),

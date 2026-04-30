@@ -31,7 +31,7 @@ class ChapaInitPaymentSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        return_obj = Return.objects.select_related("borrow__member__user_id").get(id=attrs["return_id"])
+        return_obj = Return.objects.select_related("borrow__member").get(id=attrs["return_id"])
         member_user = return_obj.borrow.member
         fine_amount = return_obj.fine_amount
 

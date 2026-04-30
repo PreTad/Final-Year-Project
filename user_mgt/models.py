@@ -58,6 +58,13 @@ class User(AbstractUser):
         ('SUPER ADMIN', 'SUPER ADMIN'),
     ]
     role = models.CharField(max_length=30,choices=ROLE_CHOICES, default='MEMBER')
+    library = models.ForeignKey(
+        "backend.Library",
+        on_delete=models.SET_NULL,
+        related_name="users",
+        null=True,
+        blank=True,
+    )
     STATUS_CHOICES = [
         ('ACTIVE', 'ACTIVE'),
         ('INACTIVE', 'INACTIVE'),
@@ -234,16 +241,48 @@ class Library(models.Model):
     campus = models.CharField(max_length=100)
     location = models.CharField(max_length=100)
     phone = models.CharField(max_length=100)
-    staff_id = models.ForeignKey(
-        Staff,
-        on_delete=models.SET_NULL,
-        null=True,     
-        blank=True ,
-        related_name='library',
-        ) 
 
-    @property
-    def staff_name(self):
-        if not self.staff_id:
-            return None
-        return self.staff_id.full_name or self.staff_id.user_id.id_number
+    def __str__(self):
+        return self.name
+
+
+class LibraryPolicy(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    library = models.ForeignKey(
+        Library,
+        on_delete=models.CASCADE,
+        related_name="policies",
+        null=True,
+        blank=True,
+    )
+    name = models.CharField(max_length=120, default="Default Library Policy")
+    is_active = models.BooleanField(default=True)
+    borrow_duration_days = models.PositiveIntegerField(default=7)
+    max_active_borrows = models.PositiveIntegerField(default=3)
+    reservation_hold_hours = models.PositiveIntegerField(default=24)
+    overdue_daily_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    fair_condition_penalty_percent = models.DecimalField(max_digits=6, decimal_places=2, default=10)
+    damaged_condition_penalty_percent = models.DecimalField(max_digits=6, decimal_places=2, default=35)
+    lost_condition_penalty_percent = models.DecimalField(max_digits=6, decimal_places=2, default=100)
+    grace_period_days = models.PositiveIntegerField(default=0)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["library__name", "-is_active", "-updated_at"]
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.is_active:
+            queryset = LibraryPolicy.objects.exclude(pk=self.pk).filter(is_active=True)
+            if self.library_id:
+                queryset = queryset.filter(library_id=self.library_id)
+            else:
+                queryset = queryset.filter(library__isnull=True)
+            queryset.update(is_active=False)
+
+    def __str__(self):
+        if self.library_id:
+            return f"{self.library.name} - {self.name}"
+        return self.name

@@ -14,12 +14,10 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 import os
 from material_mgt.models import *
 from material_mgt.serializers import *
+from user_mgt.access import get_user_library, is_super_admin, normalize_role
 from user_mgt.models import Staff
 from user_mgt.permissions import *
 # Create your views here.
-
-def _norm_role(role):
-    return "".join(str(role or "").upper().split())
 
 
 def _parse_bool(value, default=False):
@@ -44,6 +42,13 @@ def _resolve_material_or_error(material_type, material_id):
         return material_type_norm, material
 
     raise ValidationError({"material_type": "Use either 'physical' or 'digital'."})
+
+
+def _user_can_access_material(user, material):
+    if is_super_admin(user):
+        return True
+    user_library = get_user_library(user)
+    return bool(user_library and getattr(material, "library_id", None) == user_library.id)
 
 
 class IsOwnerOrReadOnly(BasePermission):
@@ -72,20 +77,33 @@ def _get_staff_profile_or_error(user):
         )
 
     staff_roles = {"STACKSTAFF", "TECHNICALSTAFF", "FRONTDESKSTAFF", "ADMIN", "SUPERADMIN"}
-    if _norm_role(getattr(user, "role", None)) not in staff_roles:
+    if normalize_role(getattr(user, "role", None)) not in staff_roles:
         raise ValidationError({"detail": "Only staff-role users can create materials."})
 
     return Staff.objects.create(user_id=user)
 
 class PhysicalMaterialViewSet(ModelViewSet):
-    queryset = PhysicalMaterial.objects.all()
+    queryset = PhysicalMaterial.objects.select_related("library", "created_by__user_id").all()
     serializer_class = PhysicalMaterialSerializer
     # permission_classes = [IsAuthenticated, IsTechnicalStaffForWrite]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if is_super_admin(self.request.user):
+            return queryset
+
+        actor_library = get_user_library(self.request.user)
+        if not actor_library:
+            return queryset.none()
+        return queryset.filter(library=actor_library)
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         staff_profile = _get_staff_profile_or_error(request.user)
+        actor_library = get_user_library(request.user)
+        if not actor_library and not is_super_admin(request.user):
+            raise ValidationError({"library": "Your account is not assigned to a library yet."})
 
         data = serializer.validated_data
         total_copies = int(data.get("total_copies") or 0)
@@ -103,24 +121,51 @@ class PhysicalMaterialViewSet(ModelViewSet):
         material = serializer.save(
             created_by=staff_profile,
             available_copies=available_copies,
+            library=data.get("library") if is_super_admin(request.user) else actor_library,
         )
         output = self.get_serializer(material)
         return Response(output.data, status=status.HTTP_201_CREATED)
 
     def perform_update(self, serializer):
-        serializer.save()
+        actor_library = get_user_library(self.request.user)
+        if not actor_library and not is_super_admin(self.request.user):
+            raise ValidationError({"library": "Your account is not assigned to a library yet."})
+        serializer.save(
+            library=serializer.validated_data.get("library") if is_super_admin(self.request.user) else actor_library
+        )
 
 
 class DigitalMaterialViewSet(ModelViewSet):
-    queryset = DigitalMaterial.objects.all()
+    queryset = DigitalMaterial.objects.select_related("library", "created_by__user_id").all()
     serializer_class = DigitalMaterialSerializer
     # permission_classes = [IsAuthenticated, IsTechnicalStaffForWrite]
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if is_super_admin(self.request.user):
+            return queryset
+
+        actor_library = get_user_library(self.request.user)
+        if not actor_library:
+            return queryset.none()
+        return queryset.filter(library=actor_library)
+
     def perform_create(self, serializer):
-        serializer.save(created_by=_get_staff_profile_or_error(self.request.user))
+        actor_library = get_user_library(self.request.user)
+        if not actor_library and not is_super_admin(self.request.user):
+            raise ValidationError({"library": "Your account is not assigned to a library yet."})
+        serializer.save(
+            created_by=_get_staff_profile_or_error(self.request.user),
+            library=serializer.validated_data.get("library") if is_super_admin(self.request.user) else actor_library,
+        )
 
     def perform_update(self, serializer):
-        serializer.save()
+        actor_library = get_user_library(self.request.user)
+        if not actor_library and not is_super_admin(self.request.user):
+            raise ValidationError({"library": "Your account is not assigned to a library yet."})
+        serializer.save(
+            library=serializer.validated_data.get("library") if is_super_admin(self.request.user) else actor_library
+        )
 
 
 class MaterialFeedbackViewSet(ModelViewSet):
@@ -155,6 +200,9 @@ class MaterialFeedbackViewSet(ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
+        target_material = serializer.validated_data.get("physical_material") or serializer.validated_data.get("digital_material")
+        if target_material and not _user_can_access_material(self.request.user, target_material):
+            raise ValidationError({"detail": "You can only comment on materials from your library."})
         serializer.save(user=self.request.user)
 
 
@@ -189,6 +237,9 @@ class MaterialFavoriteViewSet(ModelViewSet):
 
         physical_material = serializer.validated_data.get("physical_material")
         digital_material = serializer.validated_data.get("digital_material")
+        target_material = physical_material or digital_material
+        if target_material and not _user_can_access_material(request.user, target_material):
+            raise ValidationError({"detail": "You can only favorite materials from your library."})
 
         favorite, created = MaterialFavorite.objects.get_or_create(
             user=request.user,
@@ -234,6 +285,9 @@ class MaterialBookmarkViewSet(ModelViewSet):
 
         physical_material = serializer.validated_data.get("physical_material")
         digital_material = serializer.validated_data.get("digital_material")
+        target_material = physical_material or digital_material
+        if target_material and not _user_can_access_material(request.user, target_material):
+            raise ValidationError({"detail": "You can only bookmark materials from your library."})
 
         bookmark, created = MaterialBookmark.objects.get_or_create(
             user=request.user,
@@ -259,6 +313,8 @@ class MaterialInteractionStatsAPIView(APIView):
             raise ValidationError({"detail": "material_type and material_id are required."})
 
         material_type_norm, material = _resolve_material_or_error(material_type, material_id)
+        if not _user_can_access_material(request.user, material):
+            raise ValidationError({"detail": "You can only access interaction stats for materials in your library."})
 
         feedback_qs = MaterialFeedback.objects.all()
         favorites_qs = MaterialFavorite.objects.all()

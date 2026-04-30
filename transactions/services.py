@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.db import transaction
 
 from .models import Borrow, Reservation
+from user_mgt.access import get_active_library_policy
 
 @dataclass
 class OverdueNotificationSummary:
@@ -36,7 +37,7 @@ def process_overdue_borrows_and_notify():
 
     # 2. Fetch those that need notification
     overdue_qs = Borrow.objects.select_related("member", "material").filter(
-        returns__isnull=True,
+        status__in=["BORROWED", "OVERDUE"],
         due_date__lt=now,
         overdue_notified_at__isnull=True
     )
@@ -87,7 +88,7 @@ def sync_overdue_borrow_statuses(base_queryset=None, now=None):
     queryset = base_queryset if base_queryset is not None else Borrow.objects.all()
     
     overdue_qs = queryset.filter(
-        returns__isnull=True,
+        status__in=["BORROWED", "OVERDUE"],
         due_date__lt=now,
     ).exclude(status="OVERDUE")
     
@@ -141,17 +142,24 @@ def notify_reserved_members_material_available(material):
     return summary
 
 
-def calculate_overdue_days(due_date, now=None):
+def calculate_overdue_days(due_date, now=None, grace_period_days=0):
     """
     Return overdue days as full/partial day units once due_date has passed.
     Any delay beyond due_date counts as at least 1 overdue day.
     """
     now = now or timezone.now()
+    if grace_period_days:
+        due_date = due_date + timezone.timedelta(days=int(grace_period_days))
     if now <= due_date:
         return 0
 
     overdue_seconds = (now - due_date).total_seconds()
     return int((overdue_seconds + 86399) // 86400)
+
+
+def get_borrow_policy(borrow):
+    library = getattr(getattr(borrow, "material", None), "library", None) or getattr(getattr(borrow, "member", None), "library", None)
+    return get_active_library_policy(library)
 
 
 def finalize_return_for_borrow(borrow):

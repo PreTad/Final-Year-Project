@@ -25,6 +25,13 @@ class DigitalMaterial (models.Model):
     format = models.CharField(max_length=20)
     file_size = models.CharField(max_length=10)
     file = models.FileField(upload_to="digital_materials/")
+    library = models.ForeignKey(
+        "backend.Library",
+        on_delete=models.PROTECT,
+        related_name="digital_materials",
+        null=True,
+        blank=True,
+    )
     created_by = models.ForeignKey(
         "backend.Staff",
         on_delete=models.SET_NULL,
@@ -87,6 +94,13 @@ class PhysicalMaterial (models.Model):
     ]
     location = models.CharField(max_length=20,choices=LOCATION,default='STACK')
     can_borrow  = models.BooleanField(default=True)
+    library = models.ForeignKey(
+        "backend.Library",
+        on_delete=models.PROTECT,
+        related_name="physical_materials",
+        null=True,
+        blank=True,
+    )
     created_by = models.ForeignKey(
         "backend.Staff",
         on_delete=models.SET_NULL,

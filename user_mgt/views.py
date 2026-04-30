@@ -10,6 +10,7 @@ from rest_framework.viewsets import ModelViewSet
 from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from django.db.models import Q
 
+from .access import get_user_library, is_admin_like, is_super_admin, normalize_role
 from .models import Library, Staff, User
 from .permissions import CanCreateUsers, CanDeleteUsers, IsSuperAdminForWrite
 from .serializers import (
@@ -18,12 +19,15 @@ from .serializers import (
     ConfirmResetOTPSerializer,
     ForgotPasswordSerializer,
     LibrarySerializer,
+    LibraryPolicySerializer,
     ResetPasswordSerializer,
     UserListSerializer,
     UserMeSerializer,
     UserCreateSerializer,
+    UserUpdateSerializer,
     CustomTokenObtainPairSerializer,
 )
+from .models import LibraryPolicy
 
 from rest_framework_simplejwt.views import TokenObtainPairView
 
@@ -135,18 +139,39 @@ class LibraryViewSet(ModelViewSet):
     serializer_class = LibrarySerializer
     permission_classes = [IsAuthenticated, IsSuperAdminForWrite]
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if is_super_admin(self.request.user):
+            return queryset
+
+        actor_library = get_user_library(self.request.user)
+        if not actor_library:
+            return queryset.none()
+        return queryset.filter(pk=actor_library.pk)
+
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        staffs = (
-            Staff.objects.select_related("user_id")
-            .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"], library__isnull=True)
-            .order_by("user_id__first_name", "user_id__last_name")
-        )
+        if is_super_admin(request.user):
+            staffs = (
+                Staff.objects.select_related("user_id")
+                .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"])
+                .order_by("user_id__first_name", "user_id__last_name")
+            )
+        else:
+            actor_library = get_user_library(request.user)
+            staffs = (
+                Staff.objects.select_related("user_id")
+                .filter(user_id__role__in=["ADMIN", "SUPER ADMIN"], user_id__library=actor_library)
+                .order_by("user_id__first_name", "user_id__last_name")
+            )
         admin_staffs = [
             {
                 "id": str(staff.id),
+                "staff_id": str(staff.id),
+                "user_id": str(staff.user_id.id),
                 "name": staff.full_name or staff.user_id.id_number,
                 "role": staff.user_id.role,
+                "library_id": str(staff.user_id.library_id) if staff.user_id.library_id else None,
             }
             for staff in staffs
         ]
@@ -161,6 +186,38 @@ class LibraryViewSet(ModelViewSet):
 
         serializer = self.get_serializer(queryset, many=True)
         return Response({"libraries": serializer.data, "admin_staffs": admin_staffs}, status=status.HTTP_200_OK)
+
+
+class LibraryPolicyViewSet(ModelViewSet):
+    queryset = LibraryPolicy.objects.select_related("library").all()
+    serializer_class = LibraryPolicySerializer
+    permission_classes = [IsAuthenticated]
+
+    def _ensure_write_access(self):
+        if not is_admin_like(self.request.user):
+            raise ValidationError("Only ADMIN or SUPER ADMIN can manage library policies.")
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if is_super_admin(self.request.user):
+            return queryset
+
+        actor_library = get_user_library(self.request.user)
+        if not actor_library:
+            return queryset.none()
+        return queryset.filter(library=actor_library)
+
+    def perform_create(self, serializer):
+        self._ensure_write_access()
+        serializer.save()
+
+    def perform_update(self, serializer):
+        self._ensure_write_access()
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._ensure_write_access()
+        instance.delete()
 
 
 # --- User Management ---
@@ -203,13 +260,50 @@ class UserListAPIView(ListAPIView):
         queryset = User.objects.all().order_by("first_name", "last_name", "id_number")
         role = self.request.query_params.get("role")
         search = self.request.query_params.get("search")
+        actor = self.request.user
+        actor_role = normalize_role(getattr(actor, "role", None))
         
         if role:
             queryset = queryset.filter(role__istartswith=role).order_by("first_name", "last_name", "id_number")
         if search:
-            queryset = queryset.filter(Q(first_name__istartswith=search) | Q(id_number__istartswith=search))
+            queryset = queryset.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(id_number__icontains=search)
+                | Q(email__icontains=search)
+            )
+        if actor_role != "SUPERADMIN":
+            actor_library = get_user_library(actor)
+            if actor_role == "ADMIN":
+                queryset = queryset.filter(library=actor_library)
+            elif actor_library:
+                queryset = queryset.filter(library=actor_library)
+            else:
+                queryset = queryset.filter(pk=actor.pk)
         
         return queryset
+
+
+class UserUpdateAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        user = User.objects.filter(pk=pk).first()
+        if not user:
+            return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_admin_like(request.user):
+            return Response({"detail": "Only ADMIN or SUPER ADMIN can update users."}, status=status.HTTP_403_FORBIDDEN)
+
+        if not is_super_admin(request.user):
+            actor_library = get_user_library(request.user)
+            if not actor_library or user.library_id != actor_library.id:
+                return Response({"detail": "You can only update users in your library."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = UserUpdateSerializer(user, data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(UserListSerializer(user, context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class AdminUsersAPIView(APIView):
@@ -221,12 +315,16 @@ class AdminUsersAPIView(APIView):
             .filter(user_id__role__in=["ADMIN"])
             .order_by("user_id__first_name", "user_id__last_name")
         )
+        if not is_super_admin(request.user):
+            actor_library = get_user_library(request.user)
+            staffs = staffs.filter(Q(user_id__library=actor_library) | Q(user_id__library__isnull=True))
         data = [
             {
                 "staff_id": str(staff.id),
                 "name": staff.full_name or staff.user_id.id_number,
                 "role": staff.user_id.role,
                 "user_id": str(staff.user_id.id),
+                "library_id": str(staff.user_id.library_id) if staff.user_id.library_id else None,
             }
             for staff in staffs
         ]

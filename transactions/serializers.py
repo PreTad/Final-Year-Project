@@ -5,18 +5,15 @@ from django.conf import settings
 from django.db import transaction
 from .models import Borrow, Reservation, Return
 from .services import calculate_overdue_days, finalize_return_for_borrow
+from user_mgt.access import get_active_library_policy, get_user_library, is_super_admin, normalize_role
 from user_mgt.models import User
-
-
-def _norm_role(role):
-    return "".join(str(role or "").upper().split())
-
 
 class ReservationSerializer(serializers.ModelSerializer):
 
     material_title = serializers.CharField(source="material_id.title", read_only=True)
     material_author = serializers.CharField(source="material_id.author", read_only=True)
     member_id_number = serializers.CharField(source="member.id_number", required=False)
+    library_name = serializers.CharField(source="material_id.library.name", read_only=True)
     class Meta:
         model = Reservation
         fields = [
@@ -28,7 +25,8 @@ class ReservationSerializer(serializers.ModelSerializer):
             "status",
             "material_title",
             "material_author",
-            "member_id_number"
+            "member_id_number",
+            "library_name",
         ]
 
         read_only_fields = [
@@ -45,13 +43,17 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if not user or _norm_role(getattr(user, "role", None)) != "MEMBER":
+        if not user or normalize_role(getattr(user, "role", None)) != "MEMBER":
             raise serializers.ValidationError("Only members can reserve materials.")
 
         material = attrs.get("material_id")
 
         if not material:
             raise serializers.ValidationError({"material_id": "Material is required."})
+        if not material.library_id:
+            raise serializers.ValidationError({"material_id": "This material is not assigned to a library yet."})
+        if getattr(user, "library_id", None) != material.library_id and not is_super_admin(user):
+            raise serializers.ValidationError({"material_id": "You can only reserve materials from your library."})
 
         # If copies are available, user should borrow instead
         if material.available_copies > 0:
@@ -90,13 +92,14 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if not user or _norm_role(getattr(user, "role", None)) != "MEMBER":
+        if not user or normalize_role(getattr(user, "role", None)) != "MEMBER":
             raise serializers.ValidationError("Only members can create reservations.")
 
         validated_data["member"] = user
+        policy = get_active_library_policy(material.library if (material := validated_data.get("material_id")) else None)
 
         validated_data["expiry_date"] = (
-            timezone.now() + timezone.timedelta(hours=3)
+            timezone.now() + timezone.timedelta(hours=int(getattr(policy, "reservation_hold_hours", 24) or 24))
         )
 
         validated_data["status"] = "RESERVED"
@@ -114,6 +117,7 @@ class BorrowSerializer(serializers.ModelSerializer):
     return_id = serializers.SerializerMethodField()
     returned_at = serializers.SerializerMethodField()
     final_fine_amount = serializers.SerializerMethodField()
+    library_name = serializers.CharField(source="material.library.name", read_only=True)
 
     class Meta:
         model = Borrow
@@ -131,6 +135,7 @@ class BorrowSerializer(serializers.ModelSerializer):
             "material_title",
             "member_name",
             "material_author",
+            "library_name",
             "is_returned",
             "return_id",
             "returned_at",
@@ -174,8 +179,10 @@ class BorrowSerializer(serializers.ModelSerializer):
         if latest_return:
             return latest_return.fine_amount
 
-        overdue_days = 3
-        daily_fine_rate = Decimal(str(getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0")))
+        policy = get_active_library_policy(getattr(obj.material, "library", None))
+        grace_period_days = int(getattr(policy, "grace_period_days", 0) or 0)
+        overdue_days = calculate_overdue_days(obj.due_date, grace_period_days=grace_period_days)
+        daily_fine_rate = Decimal(str(getattr(policy, "overdue_daily_rate", getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0"))))
         return daily_fine_rate * overdue_days
 
     def validate(self, attrs):
@@ -195,7 +202,7 @@ class BorrowSerializer(serializers.ModelSerializer):
 
         # The Logic Gate: Check the role string
         # We use .strip() and .upper() to ensure minor typos don't break it
-        user_role = _norm_role(getattr(final_member, "role", ""))
+        user_role = normalize_role(getattr(final_member, "role", ""))
         
         if user_role != "MEMBER":
             raise serializers.ValidationError({
@@ -206,9 +213,21 @@ class BorrowSerializer(serializers.ModelSerializer):
         material = attrs.get("material")
         if not material:
             raise serializers.ValidationError({"material": "Material is required."})
+        if not material.can_borrow:
+            raise serializers.ValidationError({"material": "This material cannot be borrowed."})
+        if not material.library_id:
+            raise serializers.ValidationError({"material": "This material is not assigned to a library yet."})
+        if getattr(final_member, "library_id", None) != material.library_id:
+            raise serializers.ValidationError({"material": "Members can only borrow materials from their assigned library."})
+
+        policy = get_active_library_policy(getattr(material, "library", None))
+        max_active_borrows = int(getattr(policy, "max_active_borrows", 3) or 3)
+        active_count = Borrow.objects.filter(member=final_member).exclude(status="RETURNED").count()
+        if active_count >= max_active_borrows:
+            raise serializers.ValidationError({"member": f"This member has already reached the maximum active borrow limit of {max_active_borrows}."})
 
         # Do not trust cached available_copies alone; compute effective availability.
-        active_borrows = Borrow.objects.filter(material=material, returns__isnull=True).count()
+        active_borrows = Borrow.objects.filter(material=material).exclude(status="RETURNED").count()
         effective_available = material.total_copies - active_borrows
         if effective_available <= 0:
             raise serializers.ValidationError({"material": "No available copies to borrow."})
@@ -218,7 +237,7 @@ class BorrowSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if not user or _norm_role(getattr(user, "role", None)) != "STACKSTAFF":
+        if not user or normalize_role(getattr(user, "role", None)) != "STACKSTAFF":
             raise serializers.ValidationError("Only STACK STAFF can create borrows.")
 
         staff = getattr(user, "staff", None)
@@ -226,13 +245,14 @@ class BorrowSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Staff profile not found.")
         material = validated_data["material"]
         reservation = validated_data.get("reservation")
+        policy = get_active_library_policy(getattr(material, "library", None))
+        borrow_duration_days = int(getattr(policy, "borrow_duration_days", 7) or 7)
 
         with transaction.atomic():
             locked_material = material.__class__.objects.select_for_update().get(pk=material.pk)
             currently_borrowed = Borrow.objects.filter(
                 material=locked_material,
-                returns__isnull=True,
-            ).count()
+            ).exclude(status="RETURNED").count()
             available_after_borrow = locked_material.total_copies - (currently_borrowed + 1)
 
             if available_after_borrow < 0:
@@ -243,7 +263,7 @@ class BorrowSerializer(serializers.ModelSerializer):
 
             # set due date (example: 7 days)
             validated_data["material"] = locked_material
-            validated_data["due_date"] = timezone.now() + timezone.timedelta(minutes=2)
+            validated_data["due_date"] = timezone.now() + timezone.timedelta(days=borrow_duration_days)
             validated_data["created_by"] = staff
 
             # if borrowed from reservation, expire reservation
@@ -262,6 +282,9 @@ class ReturnSerializer(serializers.ModelSerializer):
     due_date = serializers.DateTimeField(source="borrow.due_date", read_only=True)
     payment_status = serializers.SerializerMethodField()
     payment_reference = serializers.SerializerMethodField()
+    settlement_status = serializers.SerializerMethodField()
+    requires_payment = serializers.SerializerMethodField()
+    library_name = serializers.CharField(source="borrow.material.library.name", read_only=True)
 
     class Meta:
         model = Return
@@ -278,6 +301,9 @@ class ReturnSerializer(serializers.ModelSerializer):
             "created_by",
             "payment_status",
             "payment_reference",
+            "settlement_status",
+            "requires_payment",
+            "library_name",
         ]
         read_only_fields = [
             "id",
@@ -304,6 +330,15 @@ class ReturnSerializer(serializers.ModelSerializer):
         latest_payment = self._latest_payment(obj)
         return latest_payment.transaction_reference if latest_payment else None
 
+    def get_requires_payment(self, obj):
+        return Decimal(str(obj.fine_amount or 0)) > 0
+
+    def get_settlement_status(self, obj):
+        if Decimal(str(obj.fine_amount or 0)) <= 0:
+            return "COMPLETED"
+        payment_status = self.get_payment_status(obj)
+        return "COMPLETED" if payment_status == "COMPLETED" else "AWAITING_PAYMENT"
+
     def validate(self, attrs):
         borrow = attrs.get("borrow")
         if not borrow:
@@ -311,13 +346,15 @@ class ReturnSerializer(serializers.ModelSerializer):
 
         if borrow.returns.exists():
             raise serializers.ValidationError({"borrow": "This borrow has already been returned."})
+        if not getattr(getattr(borrow, "material", None), "library_id", None):
+            raise serializers.ValidationError({"borrow": "This borrowed material is not assigned to a library yet."})
 
         return attrs
 
     def create(self, validated_data):
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if not user or _norm_role(getattr(user, "role", None)) != "STACKSTAFF":
+        if not user or normalize_role(getattr(user, "role", None)) != "STACKSTAFF":
             raise serializers.ValidationError("Only STACK STAFF can record returns.")
 
         staff = getattr(user, "staff", None)
@@ -326,9 +363,11 @@ class ReturnSerializer(serializers.ModelSerializer):
 
         borrow = validated_data["borrow"]
         now = timezone.now()
+        policy = get_active_library_policy(getattr(borrow.material, "library", None))
+        grace_period_days = int(getattr(policy, "grace_period_days", 0) or 0)
 
-        overdue_days = calculate_overdue_days(borrow.due_date, now=now)
-        daily_fine_rate = Decimal(str(getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0")))
+        overdue_days = calculate_overdue_days(borrow.due_date, now=now, grace_period_days=grace_period_days)
+        daily_fine_rate = Decimal(str(getattr(policy, "overdue_daily_rate", getattr(settings, "LIBRARY_DAILY_FINE_RATE", "0"))))
         validated_data["fine_amount"] = daily_fine_rate * overdue_days
         validated_data["created_by"] = staff
 
