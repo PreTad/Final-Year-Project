@@ -211,9 +211,35 @@ class LibraryPolicyViewSet(ModelViewSet):
         self._ensure_write_access()
         serializer.save()
 
-    def perform_update(self, serializer):
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
         self._ensure_write_access()
-        serializer.save()
+
+        policy = self._clone_policy(instance, serializer.validated_data)
+        output_serializer = self.get_serializer(policy)
+        return Response(output_serializer.data)
+
+    partial_update = update
+
+    def _clone_policy(self, instance, validated_data):
+        data = {
+            'library': validated_data.get('library', instance.library),
+            'name': validated_data.get('name', instance.name),
+            'is_active': validated_data.get('is_active', instance.is_active),
+            'borrow_duration_days': validated_data.get('borrow_duration_days', instance.borrow_duration_days),
+            'max_active_borrows': validated_data.get('max_active_borrows', instance.max_active_borrows),
+            'reservation_hold_hours': validated_data.get('reservation_hold_hours', instance.reservation_hold_hours),
+            'overdue_daily_rate': validated_data.get('overdue_daily_rate', instance.overdue_daily_rate),
+            'fair_condition_penalty_percent': validated_data.get('fair_condition_penalty_percent', instance.fair_condition_penalty_percent),
+            'damaged_condition_penalty_percent': validated_data.get('damaged_condition_penalty_percent', instance.damaged_condition_penalty_percent),
+            'lost_condition_penalty_percent': validated_data.get('lost_condition_penalty_percent', instance.lost_condition_penalty_percent),
+            'grace_period_days': validated_data.get('grace_period_days', instance.grace_period_days),
+            'notes': validated_data.get('notes', instance.notes),
+        }
+        return LibraryPolicy.objects.create(**data)
 
     def perform_destroy(self, instance):
         self._ensure_write_access()
