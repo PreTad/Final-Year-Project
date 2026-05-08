@@ -22,6 +22,16 @@ def is_admin_like(user):
     return normalize_role(getattr(user, "role", None)) in {"ADMIN", "SUPERADMIN"}
 
 
+def is_staff_like(user):
+    return normalize_role(getattr(user, "role", None)) in {
+        "STACKSTAFF",
+        "TECHNICALSTAFF",
+        "FRONTDESKSTAFF",
+        "ADMIN",
+        "SUPERADMIN",
+    }
+
+
 def get_user_library(user):
     library = getattr(user, "library", None)
     return library

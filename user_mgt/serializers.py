@@ -123,6 +123,20 @@ class LibraryPolicySerializer(serializers.ModelSerializer):
             if actor_library:
                 attrs["library"] = actor_library
 
+        target_library = attrs.get("library")
+        if target_library is None and self.instance is not None:
+            target_library = self.instance.library
+
+        if target_library is None:
+            existing_global_policy = LibraryPolicy.objects.filter(library__isnull=True)
+            if self.instance is not None:
+                existing_global_policy = existing_global_policy.exclude(pk=self.instance.pk)
+
+            if existing_global_policy.exists():
+                raise serializers.ValidationError(
+                    "Only one global library policy is allowed. Update the existing global policy instead."
+                )
+
         return attrs
 
 

@@ -198,6 +198,14 @@ if DEBUG and EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend" and 
             "Using console email backend for development."
         )
 
+# Chapa payment settings
+CHAPA_BASE_URL = os.getenv("CHAPA_BASE_URL", "https://api.chapa.co")
+CHAPA_SECRET_KEY = os.getenv("CHAPA_SECRET_KEY", "")
+CHAPA_PUBLIC_KEY = os.getenv("CHAPA_PUBLIC_KEY", "")
+CHAPA_CURRENCY = os.getenv("CHAPA_CURRENCY", "ETB")
+CHAPA_CALLBACK_URL = os.getenv("CHAPA_CALLBACK_URL", "")
+CHAPA_RETURN_URL = os.getenv("CHAPA_RETURN_URL", "")
+
 PASSWORD_RESET_FRONTEND_URL = os.getenv(
     "PASSWORD_RESET_FRONTEND_URL",
     "http://localhost:5173/reset-password",

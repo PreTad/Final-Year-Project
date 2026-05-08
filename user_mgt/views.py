@@ -217,29 +217,10 @@ class LibraryPolicyViewSet(ModelViewSet):
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         self._ensure_write_access()
-
-        policy = self._clone_policy(instance, serializer.validated_data)
-        output_serializer = self.get_serializer(policy)
-        return Response(output_serializer.data)
+        serializer.save()
+        return Response(serializer.data)
 
     partial_update = update
-
-    def _clone_policy(self, instance, validated_data):
-        data = {
-            'library': validated_data.get('library', instance.library),
-            'name': validated_data.get('name', instance.name),
-            'is_active': validated_data.get('is_active', instance.is_active),
-            'borrow_duration_days': validated_data.get('borrow_duration_days', instance.borrow_duration_days),
-            'max_active_borrows': validated_data.get('max_active_borrows', instance.max_active_borrows),
-            'reservation_hold_hours': validated_data.get('reservation_hold_hours', instance.reservation_hold_hours),
-            'overdue_daily_rate': validated_data.get('overdue_daily_rate', instance.overdue_daily_rate),
-            'fair_condition_penalty_percent': validated_data.get('fair_condition_penalty_percent', instance.fair_condition_penalty_percent),
-            'damaged_condition_penalty_percent': validated_data.get('damaged_condition_penalty_percent', instance.damaged_condition_penalty_percent),
-            'lost_condition_penalty_percent': validated_data.get('lost_condition_penalty_percent', instance.lost_condition_penalty_percent),
-            'grace_period_days': validated_data.get('grace_period_days', instance.grace_period_days),
-            'notes': validated_data.get('notes', instance.notes),
-        }
-        return LibraryPolicy.objects.create(**data)
 
     def perform_destroy(self, instance):
         self._ensure_write_access()
@@ -287,10 +268,23 @@ class UserListAPIView(ListAPIView):
         role = self.request.query_params.get("role")
         search = self.request.query_params.get("search")
         actor = self.request.user
-        actor_role = normalize_role(getattr(actor, "role", None))
+        actor_role = " ".join(
+        normalize_role(getattr(actor, "role", "")).upper().split())
         
         if role:
-            queryset = queryset.filter(role__istartswith=role).order_by("first_name", "last_name", "id_number")
+            normalized_role = " ".join(role.upper().split())
+            if normalized_role == "STACKSTAFF":
+                normalized_role = "STACK STAFF"
+            elif normalized_role == "TECHNICALSTAFF":
+                normalized_role = "TECHNICAL STAFF"
+            elif normalized_role == "FRONTDESKSTAFF":
+                normalized_role = "FRONT DESK STAFF"
+            elif normalized_role == "SUPERADMIN":
+                normalized_role = "SUPER ADMIN"
+            elif normalized_role == "DEPARTMENTHEAD":
+                normalized_role = "DEPARTMENT HEAD"
+
+            queryset = queryset.filter(role__iexact=normalized_role).order_by("first_name", "last_name", "id_number")
         if search:
             queryset = queryset.filter(
                 Q(first_name__icontains=search)
@@ -300,8 +294,11 @@ class UserListAPIView(ListAPIView):
             )
         if actor_role != "SUPERADMIN":
             actor_library = get_user_library(actor)
-            if actor_role == "ADMIN":
-                queryset = queryset.filter(library=actor_library)
+            if actor_role == "ADMIN" or actor_role == "STACKSTAFF" or actor_role == "TECHNICALSTAFF" or actor_role == "FRONTDESKSTAFF":
+                if actor_library:
+                    queryset = queryset.filter(library=actor_library)
+                else:
+                    queryset = queryset.filter(pk=actor.pk)
             elif actor_library:
                 queryset = queryset.filter(library=actor_library)
             else:
